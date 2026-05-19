@@ -132,12 +132,28 @@ xcode_targets() {
   print -l \
     "$HOME/Library/Developer/Xcode/DerivedData" \
     "$HOME/Library/Developer/Xcode/Archives" \
-    "$HOME/Library/Developer/Xcode/iOS DeviceSupport" \
-    "$HOME/Library/Developer/Xcode/watchOS DeviceSupport" \
-    "$HOME/Library/Developer/Xcode/tvOS DeviceSupport" \
     "$HOME/Library/Developer/CoreSimulator/Caches" \
     "$HOME/Library/Developer/Xcode/Products" \
     "$HOME/Library/Caches/org.swift.swiftpm"
+}
+
+devicesupport_dirs() {
+  print -l \
+    "$HOME/Library/Developer/Xcode/iOS DeviceSupport" \
+    "$HOME/Library/Developer/Xcode/watchOS DeviceSupport" \
+    "$HOME/Library/Developer/Xcode/tvOS DeviceSupport"
+}
+
+trim_devicesupport() {
+  local base=$1 keep=2 i=1 entry
+  [[ -d $base ]] || return 0
+  local -a entries
+  entries=("$base"/*(ND/Om))
+  (( ${#entries} <= keep )) && return 0
+  print "  ${C_DIM}${base:t}${C_RESET} — keeping ${keep} newest, removing $(( ${#entries} - keep ))"
+  for entry in "${entries[@]}"; do
+    (( i++ > keep )) && remove_path "$entry"
+  done
 }
 
 cache_targets() {
@@ -176,7 +192,7 @@ cmd_scan() {
   done
 
   print "\n${C_CYN}Xcode${C_RESET}"
-  for t in $(xcode_targets); do
+  for t in $(xcode_targets) $(devicesupport_dirs); do
     kb=$(size_kb "$t"); (( kb > 0 )) || continue
     account "$t" "$kb"
   done
@@ -225,14 +241,18 @@ cmd_cache() {
 
 cmd_xcode() {
   command -v xcrun >/dev/null 2>&1 || { print "${C_RED}Xcode tools not found.${C_RESET}"; return 1; }
-  local targets total
+  local targets ds_dirs total
   targets=($(xcode_targets))
-  total=$(reclaimable_kb "${targets[@]}")
+  ds_dirs=($(devicesupport_dirs))
+  total=$(reclaimable_kb "${targets[@]}" "${ds_dirs[@]}")
   print "${C_BOLD}Xcode junk${C_RESET} — reclaimable $(human $total)"
-  print "${C_DIM}DeviceSupport is regenerated when you reconnect a device; DerivedData on next build.${C_RESET}"
-  if confirm "Clear Xcode DerivedData, Archives, DeviceSupport and SPM/sim caches?"; then
+  if confirm "Clear Xcode DerivedData, Archives, SPM and sim caches?"; then
     local t
     for t in "${targets[@]}"; do empty_dir "$t"; done
+  fi
+  if confirm "Trim DeviceSupport — keep 2 newest per platform, delete the rest?"; then
+    local d
+    for d in "${ds_dirs[@]}"; do trim_devicesupport "$d"; done
   fi
   if confirm "Delete unavailable simulators (xcrun simctl delete unavailable)?"; then
     if (( DRY_RUN )); then
