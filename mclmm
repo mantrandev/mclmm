@@ -5,7 +5,7 @@
 # Commands:
 #   mclmm storage              Disk usage + biggest folders in home
 #   mclmm scan                 Smart scan: reclaimable space per category (read-only)
-#   mclmm xcode                Clean Xcode DerivedData, Archives, DeviceSupport, sims
+#   mclmm xcode                Clean Xcode DerivedData, Archives, Products, sim caches; trim DeviceSupport
 #   mclmm cache                Clean user caches, logs, package-manager caches
 #   mclmm clean                Run cache + xcode cleaners
 #   mclmm app-list             List installed apps with size
@@ -133,8 +133,7 @@ xcode_targets() {
     "$HOME/Library/Developer/Xcode/DerivedData" \
     "$HOME/Library/Developer/Xcode/Archives" \
     "$HOME/Library/Developer/CoreSimulator/Caches" \
-    "$HOME/Library/Developer/Xcode/Products" \
-    "$HOME/Library/Caches/org.swift.swiftpm"
+    "$HOME/Library/Developer/Xcode/Products"
 }
 
 devicesupport_dirs() {
@@ -246,7 +245,7 @@ cmd_xcode() {
   ds_dirs=($(devicesupport_dirs))
   total=$(reclaimable_kb "${targets[@]}" "${ds_dirs[@]}")
   print "${C_BOLD}Xcode junk${C_RESET} — reclaimable $(human $total)"
-  if confirm "Clear Xcode DerivedData, Archives, SPM and sim caches?"; then
+  if confirm "Clear Xcode DerivedData, Archives, Products and sim caches?"; then
     local t
     for t in "${targets[@]}"; do empty_dir "$t"; done
   fi
