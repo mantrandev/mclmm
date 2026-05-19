@@ -5,10 +5,11 @@
 # Commands:
 #   mclmm storage              Disk usage + biggest folders in home
 #   mclmm scan                 Smart scan: reclaimable space per category (read-only)
-#   mclmm cache                Clean user caches, logs, package-manager caches
 #   mclmm xcode                Clean Xcode DerivedData, Archives, DeviceSupport, sims
-#   mclmm uninstall <app>      Remove an app and all its leftover files
+#   mclmm cache                Clean user caches, logs, package-manager caches
 #   mclmm clean                Run cache + xcode cleaners
+#   mclmm app-list             List installed apps with size
+#   mclmm uninstall <app>      Remove an app and all its leftover files
 #
 # Global flags:
 #   --dry-run    Show what would be removed, delete nothing
@@ -326,15 +327,31 @@ cmd_clean() {
   cmd_xcode
 }
 
+cmd_app_list() {
+  local dir app kb
+  local -a rows
+  print "${C_BOLD}Installed apps${C_RESET} ${C_DIM}(/Applications)${C_RESET}"
+  for dir in /Applications/*.app(N); do
+    app=${dir:t:r}
+    kb=$(size_kb "$dir")
+    (( kb > 0 )) || continue
+    rows+=("$kb $app")
+  done
+  printf '%s\n' "${rows[@]}" | sort -rn | while read -r kb app; do
+    report_line "$app" "$kb"
+  done
+}
+
 usage() {
   print "${C_BOLD}mclmm${C_RESET} v$VERSION — lightweight macOS cleaner"
   print ""
   print "  mclmm storage              Disk usage + biggest folders in home"
   print "  mclmm scan                 Reclaimable space per category (read-only)"
-  print "  mclmm cache                Clean caches, logs, pkg-manager caches, Trash"
   print "  mclmm xcode                Clean DerivedData, Archives, DeviceSupport, sims"
-  print "  mclmm uninstall <app>      Remove an app and all its leftovers"
+  print "  mclmm cache                Clean caches, logs, pkg-manager caches, Trash"
   print "  mclmm clean                cache + xcode"
+  print "  mclmm app-list             List installed apps with size"
+  print "  mclmm uninstall <app>      Remove an app and all its leftovers"
   print ""
   print "  Each subcommand is also callable prefixed: ${C_DIM}mclmm-clean, mclmm-scan, …${C_RESET}"
   print "  Flags: --dry-run  -y/--yes  --trash  --system  -h/--help"
@@ -360,10 +377,11 @@ main() {
   case $cmd in
     storage)   cmd_storage ;;
     scan)      cmd_scan ;;
-    cache)     cmd_cache ;;
     xcode)     cmd_xcode ;;
-    uninstall) cmd_uninstall "${args[2]:-}" ;;
+    cache)     cmd_cache ;;
     clean)     cmd_clean ;;
+    app-list)  cmd_app_list ;;
+    uninstall) cmd_uninstall "${args[2]:-}" ;;
     ""|help)   usage ;;
     *) print "${C_RED}Unknown command: $cmd${C_RESET}"; usage; return 1 ;;
   esac
