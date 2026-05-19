@@ -8,7 +8,6 @@
 #   mclmm cache                Clean user caches, logs, package-manager caches
 #   mclmm xcode                Clean Xcode DerivedData, Archives, DeviceSupport, sims
 #   mclmm uninstall <app>      Remove an app and all its leftover files
-#   mclmm big [N]              Find the N largest files in home (default 20)
 #   mclmm clean                Run cache + xcode cleaners
 #
 # Global flags:
@@ -244,16 +243,6 @@ cmd_xcode() {
   fi
 }
 
-cmd_big() {
-  local n=${1:-20}
-  print "${C_BOLD}$n largest files under $HOME${C_RESET} ${C_DIM}(this may take a moment)${C_RESET}"
-  find "$HOME" -xdev -type f -not -path '*/.Trash/*' -size +50M 2>/dev/null \
-    -exec du -k {} + 2>/dev/null \
-    | sort -rn | head -"$n" | while read -r kb path; do
-      report_line "${path/#$HOME/~}" "$kb"
-    done
-}
-
 cmd_uninstall() {
   local app=$1
   [[ -n $app ]] || { print "${C_RED}Usage: mclmm uninstall <AppName | /path/App.app>${C_RESET}"; return 1; }
@@ -345,7 +334,6 @@ usage() {
   print "  mclmm cache                Clean caches, logs, pkg-manager caches, Trash"
   print "  mclmm xcode                Clean DerivedData, Archives, DeviceSupport, sims"
   print "  mclmm uninstall <app>      Remove an app and all its leftovers"
-  print "  mclmm big [N]              N largest files in home (default 20)"
   print "  mclmm clean                cache + xcode"
   print ""
   print "  Each subcommand is also callable prefixed: ${C_DIM}mclmm-clean, mclmm-scan, …${C_RESET}"
@@ -375,7 +363,6 @@ main() {
     cache)     cmd_cache ;;
     xcode)     cmd_xcode ;;
     uninstall) cmd_uninstall "${args[2]:-}" ;;
-    big)       cmd_big "${args[2]:-}" ;;
     clean)     cmd_clean ;;
     ""|help)   usage ;;
     *) print "${C_RED}Unknown command: $cmd${C_RESET}"; usage; return 1 ;;
