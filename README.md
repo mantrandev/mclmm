@@ -2,7 +2,7 @@
 
 Lightweight macOS cleaner. Single zsh script, **zero dependencies**.
 
-Inspired by [mac-cleaner-cli](https://github.com/guhcostan/mac-cleaner-cli), rewritten as one ~330-line zsh file (no Node, no Homebrew formula).
+Inspired by [mac-cleaner-cli](https://github.com/guhcostan/mac-cleaner-cli), rewritten as one self-contained zsh file (no Node, no Homebrew formula).
 
 ## Install
 
@@ -16,7 +16,7 @@ Every subcommand is also callable as `mclmm-<subcommand>` (git-style argv[0] dis
 The `mclmm-` prefix avoids name collisions with other packages on `$PATH`.
 
 ```bash
-for s in storage scan cache xcode uninstall big clean; do
+for s in storage scan cache xcode uninstall clean; do
   ln -s "$PWD/mclmm" "/usr/local/bin/mclmm-$s"
 done
 ```
@@ -33,7 +33,6 @@ identical to `mclmm scan`, `mclmm clean --dry-run`, `mclmm uninstall Slack`.
 | `mclmm cache` | Clear user caches, logs, npm/pip caches, then Trash |
 | `mclmm xcode` | Clear DerivedData, Archives, iOS/watchOS DeviceSupport, sim caches, unavailable simulators |
 | `mclmm uninstall <app>` | Remove an app **and** its caches, prefs, containers, group containers, login items |
-| `mclmm big [N]` | N largest files (>50 MB) under `$HOME` (default 20) |
 | `mclmm clean` | `cache` + `xcode` |
 
 ## Flags
@@ -48,11 +47,11 @@ identical to `mclmm scan`, `mclmm clean --dry-run`, `mclmm uninstall Slack`.
 
 ## Safety
 
-- **Read-only by default for `scan`/`storage`/`big`.**
+- **Read-only by default for `scan`/`storage`.**
 - Every destructive command shows total size and asks before deleting; combine with `--dry-run` first.
 - `--trash` makes deletions recoverable from Finder.
 - System caches require explicit `--system` + sudo; never touched otherwise.
 
 ## Beyond the reference project
 
-Additions over mac-cleaner-cli: smart-scan with nested-path de-dup (accurate totals), package-manager cache cleanup, large-file finder, full app-residue uninstall keyed by bundle id, `--trash` recoverable mode, `--dry-run`.
+Additions over mac-cleaner-cli: smart-scan with nested-path de-dup (accurate totals), package-manager cache cleanup, full app-residue uninstall keyed by bundle id, `--trash` recoverable mode, `--dry-run`.
