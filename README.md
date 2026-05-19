@@ -16,7 +16,7 @@ Every subcommand is also callable as `mclmm-<subcommand>` (git-style argv[0] dis
 The `mclmm-` prefix avoids name collisions with other packages on `$PATH`.
 
 ```bash
-for s in storage scan cache xcode uninstall clean; do
+for s in storage scan xcode cache clean app-list uninstall; do
   ln -s "$PWD/mclmm" "/usr/local/bin/mclmm-$s"
 done
 ```
@@ -30,10 +30,11 @@ identical to `mclmm scan`, `mclmm clean --dry-run`, `mclmm uninstall Slack`.
 |---|---|
 | `mclmm storage` | Disk usage + 12 biggest folders in `$HOME` |
 | `mclmm scan` | Read-only. Reclaimable space per category, nested paths de-duplicated |
-| `mclmm cache` | Clear user caches, logs, npm/pip caches, then Trash |
 | `mclmm xcode` | Clear DerivedData, Archives, iOS/watchOS DeviceSupport, sim caches, unavailable simulators |
-| `mclmm uninstall <app>` | Remove an app **and** its caches, prefs, containers, group containers, login items |
+| `mclmm cache` | Clear user caches, logs, npm/pip caches, then Trash |
 | `mclmm clean` | `cache` + `xcode` |
+| `mclmm app-list` | List all apps in `/Applications` sorted by size |
+| `mclmm uninstall <app>` | Remove an app **and** its caches, prefs, containers, group containers, login items |
 
 ## Flags
 
