@@ -28,6 +28,10 @@ ASSUME_YES=0
 USE_TRASH=0
 DO_SYSTEM=0
 
+PROTECTED_PATHS=(
+  "$HOME/Library/Caches/org.swift.swiftpm"
+)
+
 if [[ -t 1 ]]; then
   C_RESET=$'\e[0m'; C_DIM=$'\e[2m'; C_BOLD=$'\e[1m'
   C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_CYN=$'\e[36m'
@@ -101,9 +105,17 @@ remove_path() {
 }
 
 empty_dir() {
-  local d=$1 child
+  local d=$1 child p
   [[ -d $d ]] || return 0
   for child in "$d"/*(DN); do
+    local skip=0
+    for p in "${PROTECTED_PATHS[@]}"; do
+      [[ "$child" == "$p" ]] && { skip=1; break; }
+    done
+    if (( skip )); then
+      (( DRY_RUN )) && print "  ${C_DIM}keeping${C_RESET}  $child"
+      continue
+    fi
     remove_path "$child"
   done
 }
