@@ -1,0 +1,384 @@
+#!/usr/bin/env zsh
+#
+# mclmm — lightweight macOS cleaner CLI (zero dependencies)
+#
+# Commands:
+#   mclmm storage              Disk usage + biggest folders in home
+#   mclmm scan                 Smart scan: reclaimable space per category (read-only)
+#   mclmm cache                Clean user caches, logs, package-manager caches
+#   mclmm xcode                Clean Xcode DerivedData, Archives, DeviceSupport, sims
+#   mclmm uninstall <app>      Remove an app and all its leftover files
+#   mclmm big [N]              Find the N largest files in home (default 20)
+#   mclmm clean                Run cache + xcode cleaners
+#
+# Global flags:
+#   --dry-run    Show what would be removed, delete nothing
+#   -y, --yes    Skip confirmation prompts
+#   --trash      Move to ~/.Trash instead of permanent delete
+#   --system     Also touch /Library caches (needs sudo)
+#   -h, --help   Show this help
+
+emulate -L zsh
+setopt local_options null_glob
+
+VERSION="1.0.0"
+
+DRY_RUN=0
+ASSUME_YES=0
+USE_TRASH=0
+DO_SYSTEM=0
+
+if [[ -t 1 ]]; then
+  C_RESET=$'\e[0m'; C_DIM=$'\e[2m'; C_BOLD=$'\e[1m'
+  C_RED=$'\e[31m'; C_GRN=$'\e[32m'; C_YEL=$'\e[33m'; C_CYN=$'\e[36m'
+else
+  C_RESET=""; C_DIM=""; C_BOLD=""; C_RED=""; C_GRN=""; C_YEL=""; C_CYN=""
+fi
+
+human() {
+  local kb=$1
+  if (( kb >= 1048576 )); then
+    printf '%.2f GB' $(( kb / 1048576.0 ))
+  elif (( kb >= 1024 )); then
+    printf '%.2f MB' $(( kb / 1024.0 ))
+  else
+    printf '%d KB' $kb
+  fi
+}
+
+size_kb() {
+  local p=$1
+  [[ -e $p ]] || { print 0; return; }
+  du -sk "$p" 2>/dev/null | awk 'END{print ($1==""?0:$1)}'
+}
+
+reclaimable_kb() {
+  local total=0 p s r skip
+  local -a counted
+  for p in "$@"; do
+    [[ -e $p ]] || continue
+    skip=0
+    for r in "${counted[@]}"; do
+      [[ "$p/" == "$r/"* ]] && { skip=1; break; }
+    done
+    (( skip )) && continue
+    s=$(size_kb "$p")
+    counted+=("$p")
+    (( total += s ))
+  done
+  print $total
+}
+
+confirm() {
+  (( ASSUME_YES )) && return 0
+  local reply
+  print -n "${C_YEL}$1 [y/N] ${C_RESET}"
+  read -r reply
+  [[ $reply == [yY] || $reply == [yY][eE][sS] ]]
+}
+
+remove_path() {
+  local p=$1
+  [[ -e $p || -L $p ]] || return 0
+  if (( DRY_RUN )); then
+    print "  ${C_DIM}would remove${C_RESET} $p"
+    return 0
+  fi
+  if (( USE_TRASH )); then
+    local dest="$HOME/.Trash/$(basename "$p").$(date +%s)"
+    if mv "$p" "$dest" 2>/dev/null; then
+      print "  ${C_GRN}trashed${C_RESET}  $p"
+    else
+      print "  ${C_RED}failed${C_RESET}   $p"
+    fi
+  else
+    if rm -rf "$p" 2>/dev/null; then
+      print "  ${C_GRN}removed${C_RESET}  $p"
+    else
+      print "  ${C_RED}failed${C_RESET}   $p (try with sudo / --trash)"
+    fi
+  fi
+}
+
+empty_dir() {
+  local d=$1 child
+  [[ -d $d ]] || return 0
+  for child in "$d"/*(DN); do
+    remove_path "$child"
+  done
+}
+
+report_line() {
+  if [[ -n ${3:-} ]]; then
+    printf "  %-34s %s ${C_DIM}%s${C_RESET}\n" "$1" "$(human $2)" "$3"
+  else
+    printf '  %-34s %s\n' "$1" "$(human $2)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+
+cmd_storage() {
+  print "${C_BOLD}Disk${C_RESET}"
+  df -h / | awk 'NR==1{print "  "$0} NR==2{print "  "$0}'
+  print ""
+  print "${C_BOLD}Largest folders in $HOME${C_RESET} ${C_DIM}(top 12)${C_RESET}"
+  du -sk "$HOME"/*(DN) 2>/dev/null | sort -rn | head -12 | while read -r kb path; do
+    report_line "${path/#$HOME/~}" "$kb"
+  done
+}
+
+xcode_targets() {
+  print -l \
+    "$HOME/Library/Developer/Xcode/DerivedData" \
+    "$HOME/Library/Developer/Xcode/Archives" \
+    "$HOME/Library/Developer/Xcode/iOS DeviceSupport" \
+    "$HOME/Library/Developer/Xcode/watchOS DeviceSupport" \
+    "$HOME/Library/Developer/Xcode/tvOS DeviceSupport" \
+    "$HOME/Library/Developer/CoreSimulator/Caches" \
+    "$HOME/Library/Developer/Xcode/Products" \
+    "$HOME/Library/Caches/org.swift.swiftpm"
+}
+
+cache_targets() {
+  print -l \
+    "$HOME/Library/Caches" \
+    "$HOME/Library/Logs" \
+    "$HOME/Library/Application Support/CrashReporter" \
+    "$HOME/.npm/_cacache" \
+    "$HOME/.cache" \
+    "$HOME/Library/Caches/Yarn" \
+    "$HOME/Library/Caches/pip" \
+    "$HOME/Library/Caches/CocoaPods" \
+    "$HOME/Library/Caches/Homebrew"
+}
+
+cmd_scan() {
+  print "${C_BOLD}Smart scan${C_RESET} ${C_DIM}(read-only)${C_RESET}"
+  local grand=0 kb t r nested
+  local -a counted
+
+  account() {
+    local p=$1 size=$2
+    for r in "${counted[@]}"; do
+      if [[ "$p/" == "$r/"* ]]; then
+        report_line "${p/#$HOME/~}" "$size" "(within ${r:t})"
+        return
+      fi
+    done
+    counted+=("$p"); report_line "${p/#$HOME/~}" "$size"; (( grand += size ))
+  }
+
+  print "\n${C_CYN}User caches & logs${C_RESET}"
+  for t in $(cache_targets); do
+    kb=$(size_kb "$t"); (( kb > 0 )) || continue
+    account "$t" "$kb"
+  done
+
+  print "\n${C_CYN}Xcode${C_RESET}"
+  for t in $(xcode_targets); do
+    kb=$(size_kb "$t"); (( kb > 0 )) || continue
+    account "$t" "$kb"
+  done
+
+  print "\n${C_CYN}Trash${C_RESET}"
+  kb=$(size_kb "$HOME/.Trash")
+  account "$HOME/.Trash" "$kb"
+
+  if (( DO_SYSTEM )); then
+    print "\n${C_CYN}System (sudo)${C_RESET}"
+    kb=$(sudo du -sk /Library/Caches 2>/dev/null | awk '{print $1}')
+    [[ -n $kb ]] && { report_line "/Library/Caches" "$kb"; (( grand += kb )); }
+  fi
+
+  print "\n${C_BOLD}Total reclaimable: ${C_GRN}$(human $grand)${C_RESET}"
+  print "${C_DIM}Run 'mclmm clean' to reclaim, or 'mclmm cache' / 'mclmm xcode' selectively.${C_RESET}"
+}
+
+cmd_cache() {
+  local targets total
+  targets=($(cache_targets))
+  total=$(reclaimable_kb "${targets[@]}")
+  print "${C_BOLD}User caches & logs${C_RESET} — reclaimable $(human $total)"
+  if confirm "Clear user caches, logs and package-manager caches?"; then
+    local t
+    for t in "${targets[@]}"; do empty_dir "$t"; done
+  fi
+
+  local trash_kb
+  trash_kb=$(size_kb "$HOME/.Trash")
+  if (( trash_kb > 0 )) && confirm "Empty Trash ($(human $trash_kb))?"; then
+    empty_dir "$HOME/.Trash"
+  fi
+
+  if (( DO_SYSTEM )); then
+    if confirm "Clear /Library/Caches with sudo?"; then
+      if (( DRY_RUN )); then
+        print "  ${C_DIM}would run${C_RESET} sudo rm -rf /Library/Caches/*"
+      else
+        sudo sh -c 'rm -rf /Library/Caches/* 2>/dev/null' \
+          && print "  ${C_GRN}removed${C_RESET}  /Library/Caches/*"
+      fi
+    fi
+  fi
+}
+
+cmd_xcode() {
+  command -v xcrun >/dev/null 2>&1 || { print "${C_RED}Xcode tools not found.${C_RESET}"; return 1; }
+  local targets total
+  targets=($(xcode_targets))
+  total=$(reclaimable_kb "${targets[@]}")
+  print "${C_BOLD}Xcode junk${C_RESET} — reclaimable $(human $total)"
+  print "${C_DIM}DeviceSupport is regenerated when you reconnect a device; DerivedData on next build.${C_RESET}"
+  if confirm "Clear Xcode DerivedData, Archives, DeviceSupport and SPM/sim caches?"; then
+    local t
+    for t in "${targets[@]}"; do empty_dir "$t"; done
+  fi
+  if confirm "Delete unavailable simulators (xcrun simctl delete unavailable)?"; then
+    if (( DRY_RUN )); then
+      print "  ${C_DIM}would run${C_RESET} xcrun simctl delete unavailable"
+    else
+      xcrun simctl delete unavailable 2>/dev/null \
+        && print "  ${C_GRN}done${C_RESET}     removed unavailable simulators"
+    fi
+  fi
+}
+
+cmd_big() {
+  local n=${1:-20}
+  print "${C_BOLD}$n largest files under $HOME${C_RESET} ${C_DIM}(this may take a moment)${C_RESET}"
+  find "$HOME" -xdev -type f -not -path '*/.Trash/*' -size +50M 2>/dev/null \
+    -exec du -k {} + 2>/dev/null \
+    | sort -rn | head -"$n" | while read -r kb path; do
+      report_line "${path/#$HOME/~}" "$kb"
+    done
+}
+
+cmd_uninstall() {
+  local app=$1
+  [[ -n $app ]] || { print "${C_RED}Usage: mclmm uninstall <AppName | /path/App.app>${C_RESET}"; return 1; }
+
+  local apppath=""
+  if [[ -d $app && $app == *.app ]]; then
+    apppath=$app
+  elif [[ -d "/Applications/$app.app" ]]; then
+    apppath="/Applications/$app.app"
+  elif [[ -d "/Applications/$app" ]]; then
+    apppath="/Applications/$app"
+  elif [[ -d "$HOME/Applications/$app.app" ]]; then
+    apppath="$HOME/Applications/$app.app"
+  fi
+
+  if [[ -z $apppath ]]; then
+    print "${C_RED}App not found:${C_RESET} $app"
+    print "${C_DIM}Pass the name (without .app) or a full path to the .app bundle.${C_RESET}"
+    return 1
+  fi
+
+  local appname="${apppath:t:r}"
+  local bid
+  bid=$(defaults read "$apppath/Contents/Info" CFBundleIdentifier 2>/dev/null)
+  print "${C_BOLD}Uninstall:${C_RESET} $appname"
+  print "  bundle: ${bid:-unknown}"
+  print "  app:    $apppath"
+
+  local -a candidates
+  candidates=("$apppath")
+  candidates+=(
+    "$HOME/Library/Application Support/$appname"
+    "$HOME/Library/Caches/$appname"
+    "$HOME/Library/Logs/$appname"
+    "$HOME/Library/Preferences/$appname.plist"
+  )
+  if [[ -n $bid ]]; then
+    candidates+=(
+      "$HOME/Library/Application Support/$bid"
+      "$HOME/Library/Caches/$bid"
+      "$HOME/Library/Preferences/$bid.plist"
+      "$HOME/Library/Preferences/$bid".*.plist
+      "$HOME/Library/Saved Application State/$bid.savedState"
+      "$HOME/Library/Containers/$bid"
+      "$HOME/Library/Application Scripts/$bid"
+      "$HOME/Library/HTTPStorages/$bid"
+      "$HOME/Library/HTTPStorages/$bid".*
+      "$HOME/Library/WebKit/$bid"
+      "$HOME/Library/Cookies/$bid.binarycookies"
+      "$HOME/Library/LaunchAgents/$bid.plist"
+      $HOME/Library/Group\ Containers/*"$bid"*
+    )
+  fi
+
+  local -a found
+  local c kb total=0
+  for c in "${candidates[@]}"; do
+    [[ -e $c || -L $c ]] || continue
+    kb=$(size_kb "$c")
+    found+=("$c")
+    report_line "${c/#$HOME/~}" "$kb"
+    (( total += kb ))
+  done
+
+  (( ${#found} == 0 )) && { print "${C_DIM}Nothing to remove.${C_RESET}"; return 0; }
+  print "${C_BOLD}Total: $(human $total) across ${#found} items${C_RESET}"
+
+  if [[ -n $appname ]] && pgrep -x "$appname" >/dev/null 2>&1; then
+    print "${C_YEL}$appname is running — quitting it first.${C_RESET}"
+    (( DRY_RUN )) || osascript -e "tell application \"$appname\" to quit" 2>/dev/null
+  fi
+
+  if confirm "Permanently remove all ${#found} items above?"; then
+    for c in "${found[@]}"; do remove_path "$c"; done
+  fi
+}
+
+cmd_clean() {
+  cmd_cache
+  print ""
+  cmd_xcode
+}
+
+usage() {
+  print "${C_BOLD}mclmm${C_RESET} v$VERSION — lightweight macOS cleaner"
+  print ""
+  print "  mclmm storage              Disk usage + biggest folders in home"
+  print "  mclmm scan                 Reclaimable space per category (read-only)"
+  print "  mclmm cache                Clean caches, logs, pkg-manager caches, Trash"
+  print "  mclmm xcode                Clean DerivedData, Archives, DeviceSupport, sims"
+  print "  mclmm uninstall <app>      Remove an app and all its leftovers"
+  print "  mclmm big [N]              N largest files in home (default 20)"
+  print "  mclmm clean                cache + xcode"
+  print ""
+  print "  Flags: --dry-run  -y/--yes  --trash  --system  -h/--help"
+}
+
+# ---------------------------------------------------------------------------
+
+main() {
+  local -a args
+  while (( $# )); do
+    case $1 in
+      --dry-run) DRY_RUN=1 ;;
+      -y|--yes)  ASSUME_YES=1 ;;
+      --trash)   USE_TRASH=1 ;;
+      --system)  DO_SYSTEM=1 ;;
+      -h|--help) usage; return 0 ;;
+      *) args+=("$1") ;;
+    esac
+    shift
+  done
+
+  local cmd=${args[1]:-}
+  case $cmd in
+    storage)   cmd_storage ;;
+    scan)      cmd_scan ;;
+    cache)     cmd_cache ;;
+    xcode)     cmd_xcode ;;
+    uninstall) cmd_uninstall "${args[2]:-}" ;;
+    big)       cmd_big "${args[2]:-}" ;;
+    clean)     cmd_clean ;;
+    ""|help)   usage ;;
+    *) print "${C_RED}Unknown command: $cmd${C_RESET}"; usage; return 1 ;;
+  esac
+}
+
+main "$@"
