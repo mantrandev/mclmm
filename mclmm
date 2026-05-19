@@ -348,6 +348,7 @@ usage() {
   print "  mclmm big [N]              N largest files in home (default 20)"
   print "  mclmm clean                cache + xcode"
   print ""
+  print "  Each subcommand is also callable prefixed: ${C_DIM}mclmm-clean, mclmm-scan, …${C_RESET}"
   print "  Flags: --dry-run  -y/--yes  --trash  --system  -h/--help"
 }
 
@@ -381,4 +382,9 @@ main() {
   esac
 }
 
-main "$@"
+_argv0=${0:t}
+if [[ $_argv0 == mclmm-?* ]]; then
+  main "${_argv0#mclmm-}" "$@"
+else
+  main "$@"
+fi
