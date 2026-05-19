@@ -99,7 +99,12 @@ remove_path() {
     if rm -rf "$p" 2>/dev/null; then
       print "  ${C_GRN}removed${C_RESET}  $p"
     else
-      print "  ${C_RED}failed${C_RESET}   $p (try with sudo / --trash)"
+      chflags -R nouchg "$p" 2>/dev/null
+      if rm -rf "$p" 2>/dev/null; then
+        print "  ${C_GRN}removed${C_RESET}  $p"
+      else
+        print "  ${C_RED}failed${C_RESET}   $p (try with sudo / --trash)"
+      fi
     fi
   fi
 }
