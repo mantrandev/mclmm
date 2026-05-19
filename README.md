@@ -10,6 +10,20 @@ Inspired by [mac-cleaner-cli](https://github.com/guhcostan/mac-cleaner-cli), rew
 ln -s "$PWD/mclmm" /usr/local/bin/mclmm   # or anywhere on $PATH
 ```
 
+### Prefixed commands
+
+Every subcommand is also callable as `mclmm-<subcommand>` (git-style argv[0] dispatch).
+The `mclmm-` prefix avoids name collisions with other packages on `$PATH`.
+
+```bash
+for s in storage scan cache xcode uninstall big clean; do
+  ln -s "$PWD/mclmm" "/usr/local/bin/mclmm-$s"
+done
+```
+
+Then `mclmm-scan`, `mclmm-clean --dry-run`, `mclmm-uninstall Slack` all work,
+identical to `mclmm scan`, `mclmm clean --dry-run`, `mclmm uninstall Slack`.
+
 ## Commands
 
 | Command | What it does |
