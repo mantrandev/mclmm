@@ -262,6 +262,11 @@ cmd_xcode() {
   ds_dirs=($(devicesupport_dirs))
   total=$(reclaimable_kb "${targets[@]}" "${ds_dirs[@]}")
   print "${C_BOLD}Xcode junk${C_RESET} — reclaimable $(human $total)"
+  if pgrep -x Xcode >/dev/null 2>&1; then
+    print "${C_YEL}Xcode is running — quitting before cleanup.${C_RESET}"
+    (( DRY_RUN )) || osascript -e 'tell application "Xcode" to quit' 2>/dev/null
+    (( DRY_RUN )) || sleep 2
+  fi
   if confirm "Clear Xcode DerivedData, Archives, Products and sim caches?"; then
     local t
     for t in "${targets[@]}"; do empty_dir "$t"; done
