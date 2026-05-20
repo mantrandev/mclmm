@@ -259,12 +259,20 @@ select_deriveddata() {
   local dd="$HOME/Library/Developer/Xcode/DerivedData"
   [[ -d $dd ]] || { print "${C_DIM}DerivedData not found.${C_RESET}"; return 0; }
 
-  local -a paths names sizes
-  local dir kb
+  local -a paths labels sizes
+  local dir kb wspath label
   for dir in "$dd"/*(ND/); do
     kb=$(size_kb "$dir")
     (( kb > 0 )) || continue
-    paths+=("$dir"); names+=("${dir:t}"); sizes+=("$kb")
+    paths+=("$dir"); sizes+=("$kb")
+    if [[ -f "$dir/info.plist" ]]; then
+      wspath=$(/usr/libexec/PlistBuddy -c "Print WorkspacePath" "$dir/info.plist" 2>/dev/null)
+    else
+      wspath=""
+    fi
+    label="${wspath:+${wspath/#$HOME/~}}"
+    [[ -z $label ]] && label="${dir:t}"
+    labels+=("$label")
   done
 
   (( ${#paths} == 0 )) && { print "${C_DIM}DerivedData is empty.${C_RESET}"; return 0; }
@@ -275,7 +283,9 @@ select_deriveddata() {
   fi
 
   local -a sel
-  local i cursor=1
+  local i cursor=1 cols=${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}
+  local label_width=$(( cols - 18 ))
+  (( label_width < 20 )) && label_width=20
   for (( i=1; i<=${#paths}; i++ )); do sel[i]=0; done
 
   local saved_stty
@@ -295,7 +305,9 @@ select_deriveddata() {
       local mark="${C_DIM}[ ]${C_RESET}" arrow="  "
       (( sel[i] )) && mark="${C_GRN}[x]${C_RESET}"
       [[ $i == $cursor ]] && arrow="${C_CYN}▶ ${C_RESET}"
-      printf '%s%s %-50s %s\n' "$arrow" "$mark" "${names[i]}" "$(human ${sizes[i]})"
+      local lbl="${labels[i]}"
+      (( ${#lbl} > label_width )) && lbl="…${lbl: -$(( label_width - 1 ))}"
+      printf '%s%s %-*s %s\n' "$arrow" "$mark" "$label_width" "$lbl" "$(human ${sizes[i]})"
     done
     printf '\n  %sSelected:%s %d item(s)' "$C_BOLD" "$C_RESET" "$n"
     (( total_kb > 0 )) && printf ' — %s' "$(human $total_kb)"
