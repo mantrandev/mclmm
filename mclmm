@@ -679,28 +679,225 @@ schedule_remove() {
     print "${C_DIM}(no mclmm schedules to remove)${C_RESET}"
     return 0
   fi
-  local i p
-  print "${C_BOLD}Remove which schedule?${C_RESET}"
-  for (( i=1; i<=${#plists}; i++ )); do
-    printf '  %d) %s\n' "$i" "${plists[i]:t:r}"
-  done
-  local reply
-  print -n "${C_YEL}Choose [1-${#plists}, or 'a' for all]: ${C_RESET}"
-  read -r reply
-  local -a victims
-  if [[ $reply == a || $reply == A ]]; then
-    victims=("${plists[@]}")
-  elif [[ $reply == <-> ]] && (( reply >= 1 && reply <= ${#plists} )); then
-    victims=("${plists[reply]}")
-  else
-    print "${C_DIM}cancelled${C_RESET}"
+
+  if ! [[ -t 0 && -t 1 ]]; then
+    local i p reply
+    print "${C_BOLD}Remove which schedule?${C_RESET}"
+    for (( i=1; i<=${#plists}; i++ )); do
+      printf '  %d) %s\n' "$i" "${plists[i]:t:r}"
+    done
+    print -n "${C_YEL}Choose [1-${#plists}, or 'a' for all]: ${C_RESET}"
+    read -r reply
+    local -a victims
+    if [[ $reply == a || $reply == A ]]; then
+      victims=("${plists[@]}")
+    elif [[ $reply == <-> ]] && (( reply >= 1 && reply <= ${#plists} )); then
+      victims=("${plists[reply]}")
+    else
+      print "${C_DIM}cancelled${C_RESET}"
+      return 0
+    fi
+    for p in "${victims[@]}"; do
+      launchctl unload "$p" 2>/dev/null
+      rm -f "$p"
+      print "${C_GRN}removed${C_RESET}  ${p:t:r}"
+    done
     return 0
   fi
-  for p in "${victims[@]}"; do
+
+  local cursor=1 first=1 saved_stty key esc i
+  local -a sel
+  for (( i=1; i<=${#plists}; i++ )); do sel[i]=0; done
+  saved_stty=$(stty -g 2>/dev/null)
+  stty -echo -icanon min 1 time 0 2>/dev/null
+  printf '\e[?25l'
+
+  _render_rm() {
+    if (( first )); then
+      printf '\e[2J\e[H'
+      first=0
+    else
+      printf '\e[%dA' $(( ${#plists} + 4 ))
+    fi
+    printf '%sRemove mclmm schedule%s %s↑↓ move  SPACE toggle  a all  ENTER confirm  ESC/q cancel%s\e[K\n' \
+      "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET"
+    printf '\e[K\n'
+    local i mark arrow
+    for (( i=1; i<=${#plists}; i++ )); do
+      mark="${C_DIM}[ ]${C_RESET}"; arrow="  "
+      (( sel[i] )) && mark="${C_GRN}[x]${C_RESET}"
+      [[ $i == $cursor ]] && arrow="${C_CYN}▶ ${C_RESET}"
+      printf '%s%s %s\e[K\n' "$arrow" "$mark" "${plists[i]:t:r}"
+    done
+    local n=0
+    for (( i=1; i<=${#plists}; i++ )); do (( sel[i] )) && (( n++ )); done
+    printf '\e[K\n  %sSelected:%s %d item(s)\e[K\n' "$C_BOLD" "$C_RESET" "$n"
+  }
+
+  while true; do
+    _render_rm
+    IFS= read -rsk 1 key
+    if [[ $key == $'\x1b' ]]; then
+      IFS= read -rsk 2 -t 0.05 esc 2>/dev/null || esc=""
+      case $esc in
+        '[A') (( cursor > 1 )) && (( cursor-- )) ;;
+        '[B') (( cursor < ${#plists} )) && (( cursor++ )) ;;
+        '')
+          stty "$saved_stty" 2>/dev/null
+          printf '\e[?25h\e[2J\e[H'
+          print "${C_DIM}cancelled${C_RESET}"
+          return 0
+          ;;
+      esac
+      continue
+    fi
+    case $key in
+      k) (( cursor > 1 )) && (( cursor-- )) ;;
+      j) (( cursor < ${#plists} )) && (( cursor++ )) ;;
+      ' ') sel[cursor]=$(( 1 - sel[cursor] )) ;;
+      a|A)
+        local all_on=1
+        for (( i=1; i<=${#plists}; i++ )); do (( sel[i] == 0 )) && { all_on=0; break; }; done
+        for (( i=1; i<=${#plists}; i++ )); do sel[i]=$(( 1 - all_on )); done
+        ;;
+      $'\n'|$'\r') break ;;
+      q|Q)
+        stty "$saved_stty" 2>/dev/null
+        printf '\e[?25h\e[2J\e[H'
+        print "${C_DIM}cancelled${C_RESET}"
+        return 0
+        ;;
+    esac
+  done
+
+  stty "$saved_stty" 2>/dev/null
+  printf '\e[?25h\e[2J\e[H'
+
+  local n=0
+  for (( i=1; i<=${#plists}; i++ )); do (( sel[i] )) && (( n++ )); done
+  if (( n == 0 )); then
+    print "${C_DIM}Nothing selected.${C_RESET}"
+    return 0
+  fi
+
+  local p
+  for (( i=1; i<=${#plists}; i++ )); do
+    (( sel[i] )) || continue
+    p=${plists[i]}
     launchctl unload "$p" 2>/dev/null
     rm -f "$p"
     print "${C_GRN}removed${C_RESET}  ${p:t:r}"
   done
+}
+
+schedule_form() {
+  local -a tasks=(clean cache xcode)
+  local -a freqs=(weekly daily)
+  local -a days=(Sun Mon Tue Wed Thu Fri Sat)
+  local task_idx=1 freq_idx=1 day_idx=1 hour=3
+  local -a fields
+  local cursor=1 first=1 saved_stty key esc
+  saved_stty=$(stty -g 2>/dev/null)
+  stty -echo -icanon min 1 time 0 2>/dev/null
+  printf '\e[?25l'
+
+  local _last_rows=0
+  _refresh_fields() {
+    if [[ ${freqs[freq_idx]} == weekly ]]; then
+      fields=(task freq day hour)
+    else
+      fields=(task freq hour)
+    fi
+    (( cursor > ${#fields} )) && cursor=${#fields}
+  }
+
+  _draw_row() {
+    local label=$1 value=$2 is_cursor=$3
+    local mark="  " left="${C_DIM}◀${C_RESET}" right="${C_DIM}▶${C_RESET}"
+    (( is_cursor )) && { mark="${C_CYN}▶ ${C_RESET}"; left="${C_GRN}◀${C_RESET}"; right="${C_GRN}▶${C_RESET}"; }
+    printf '%s%-12s %s %s%-8s%s %s\e[K\n' "$mark" "$label" "$left" "$C_BOLD" "$value" "$C_RESET" "$right"
+  }
+
+  _render() {
+    _refresh_fields
+    local total=$(( ${#fields} + 4 ))
+    if (( first )); then
+      printf '\e[2J\e[H'
+      first=0
+    else
+      printf '\e[%dA' "$_last_rows"
+    fi
+    _last_rows=$total
+    printf '%sSchedule mclmm cleanup%s\e[K\n' "$C_BOLD" "$C_RESET"
+    printf '\e[K\n'
+    local i field
+    for (( i=1; i<=${#fields}; i++ )); do
+      field=${fields[i]}
+      case $field in
+        task) _draw_row "Task"      "${tasks[task_idx]}"            "$(( i == cursor ))" ;;
+        freq) _draw_row "Frequency" "${freqs[freq_idx]}"            "$(( i == cursor ))" ;;
+        day)  _draw_row "Day"       "${days[day_idx]}"              "$(( i == cursor ))" ;;
+        hour) _draw_row "Hour"      "$(printf '%02d:00' $hour)"     "$(( i == cursor ))" ;;
+      esac
+    done
+    printf '\e[K\n'
+    printf '  %s↑↓%s field  %s←→%s value  %sENTER%s install  %sESC/q%s cancel\e[K\n' \
+      "$C_DIM" "$C_RESET" "$C_DIM" "$C_RESET" "$C_DIM" "$C_RESET" "$C_DIM" "$C_RESET"
+  }
+
+  _adjust() {
+    local dir=$1 field=${fields[cursor]}
+    case $field in
+      task) task_idx=$(( (task_idx - 1 + dir + ${#tasks}) % ${#tasks} + 1 )) ;;
+      freq) freq_idx=$(( (freq_idx - 1 + dir + ${#freqs}) % ${#freqs} + 1 )) ;;
+      day)  day_idx=$(( (day_idx  - 1 + dir + ${#days})  % ${#days}  + 1 )) ;;
+      hour) hour=$(( (hour + dir + 24) % 24 )) ;;
+    esac
+  }
+
+  while true; do
+    _render
+    IFS= read -rsk 1 key
+    if [[ $key == $'\x1b' ]]; then
+      IFS= read -rsk 2 -t 0.05 esc 2>/dev/null || esc=""
+      case $esc in
+        '[A') (( cursor > 1 )) && (( cursor-- )) ;;
+        '[B') (( cursor < ${#fields} )) && (( cursor++ )) ;;
+        '[C') _adjust 1 ;;
+        '[D') _adjust -1 ;;
+        '')
+          stty "$saved_stty" 2>/dev/null
+          printf '\e[?25h\e[2J\e[H'
+          print "${C_DIM}Cancelled.${C_RESET}"
+          return 1
+          ;;
+      esac
+      continue
+    fi
+    case $key in
+      $'\n'|$'\r') break ;;
+      h) _adjust -1 ;;
+      l) _adjust 1 ;;
+      k) (( cursor > 1 )) && (( cursor-- )) ;;
+      j) (( cursor < ${#fields} )) && (( cursor++ )) ;;
+      q|Q)
+        stty "$saved_stty" 2>/dev/null
+        printf '\e[?25h\e[2J\e[H'
+        print "${C_DIM}Cancelled.${C_RESET}"
+        return 1
+        ;;
+    esac
+  done
+
+  stty "$saved_stty" 2>/dev/null
+  printf '\e[?25h\e[2J\e[H'
+
+  _SCHED_TASK=${tasks[task_idx]}
+  _SCHED_FREQ=${freqs[freq_idx]}
+  _SCHED_DAY_NAME=${days[day_idx]}
+  _SCHED_WEEKDAY=$(( day_idx - 1 ))
+  _SCHED_HOUR=$hour
+  return 0
 }
 
 cmd_schedule() {
@@ -710,20 +907,25 @@ cmd_schedule() {
     remove|rm) schedule_remove ;;
     ""|add)
       local task freq weekday=0 hour day_name
-      task=$(schedule_pick "Task" clean cache xcode) || return 1
-      print ""
-      freq=$(schedule_pick "Frequency" weekly daily) || return 1
-      print ""
-      if [[ $freq == weekly ]]; then
-        day_name=$(schedule_pick "Day of week" Sun Mon Tue Wed Thu Fri Sat) || return 1
-        case $day_name in
-          Sun) weekday=0 ;; Mon) weekday=1 ;; Tue) weekday=2 ;;
-          Wed) weekday=3 ;; Thu) weekday=4 ;; Fri) weekday=5 ;; Sat) weekday=6 ;;
-        esac
-        print ""
+      if [[ -t 0 && -t 1 ]]; then
+        schedule_form || return 1
+        task=$_SCHED_TASK
+        freq=$_SCHED_FREQ
+        weekday=$_SCHED_WEEKDAY
+        day_name=$_SCHED_DAY_NAME
+        hour=$_SCHED_HOUR
+      else
+        task=$(schedule_pick "Task" clean cache xcode) || return 1
+        freq=$(schedule_pick "Frequency" weekly daily) || return 1
+        if [[ $freq == weekly ]]; then
+          day_name=$(schedule_pick "Day of week" Sun Mon Tue Wed Thu Fri Sat) || return 1
+          case $day_name in
+            Sun) weekday=0 ;; Mon) weekday=1 ;; Tue) weekday=2 ;;
+            Wed) weekday=3 ;; Thu) weekday=4 ;; Fri) weekday=5 ;; Sat) weekday=6 ;;
+          esac
+        fi
+        hour=$(schedule_pick_hour) || return 1
       fi
-      hour=$(schedule_pick_hour) || return 1
-      print ""
       print "${C_BOLD}Summary${C_RESET}"
       print "  task:      $task"
       print "  frequency: $freq"
