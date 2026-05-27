@@ -30,6 +30,9 @@ DO_SYSTEM=0
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mclmm"
 CONFIG_PATHS_FILE="$CONFIG_DIR/paths.conf"
+LAUNCHAGENTS_DIR="$HOME/Library/LaunchAgents"
+MCLMM_LOG_DIR="$HOME/Library/Logs/mclmm"
+PLIST_PREFIX="com.mclmm"
 
 PROTECTED_PATHS=(
   "$HOME/Library/Caches/org.swift.swiftpm"
@@ -547,6 +550,201 @@ cmd_config() {
   esac
 }
 
+script_realpath() {
+  local p=$1
+  if command -v realpath >/dev/null 2>&1; then
+    realpath "$p" 2>/dev/null && return
+  fi
+  if command -v readlink >/dev/null 2>&1; then
+    readlink -f "$p" 2>/dev/null && return
+  fi
+  print -- "$p"
+}
+
+schedule_pick() {
+  local prompt=$1; shift
+  local -a opts=("$@")
+  local i reply
+  {
+    print "${C_BOLD}$prompt${C_RESET}"
+    for (( i=1; i<=${#opts}; i++ )); do
+      printf '  %d) %s\n' "$i" "${opts[i]}"
+    done
+    print -n "${C_YEL}Choose [1-${#opts}, default 1]: ${C_RESET}"
+  } >&2
+  read -r reply
+  [[ -z $reply ]] && reply=1
+  if ! [[ $reply == <-> ]] || (( reply < 1 || reply > ${#opts} )); then
+    print "${C_RED}Invalid choice.${C_RESET}" >&2
+    return 1
+  fi
+  print -- "${opts[reply]}"
+}
+
+schedule_pick_hour() {
+  local reply
+  print -n "${C_YEL}Hour 0-23 [default 3]: ${C_RESET}" >&2
+  read -r reply
+  [[ -z $reply ]] && reply=3
+  if ! [[ $reply == <-> ]] || (( reply < 0 || reply > 23 )); then
+    print "${C_RED}Invalid hour.${C_RESET}" >&2
+    return 1
+  fi
+  print -- "$reply"
+}
+
+schedule_install() {
+  local task=$1 freq=$2 weekday=$3 hour=$4
+  local script
+  script=$(script_realpath "$0")
+  if [[ ! -x $script ]]; then
+    print "${C_RED}Cannot resolve script path:${C_RESET} $script"
+    return 1
+  fi
+
+  mkdir -p "$LAUNCHAGENTS_DIR" "$MCLMM_LOG_DIR"
+  local label="$PLIST_PREFIX.$task"
+  local plist="$LAUNCHAGENTS_DIR/$label.plist"
+  local log="$MCLMM_LOG_DIR/$task.log"
+
+  local cal_block
+  if [[ $freq == weekly ]]; then
+    cal_block="    <key>Weekday</key><integer>$weekday</integer>
+    <key>Hour</key><integer>$hour</integer>
+    <key>Minute</key><integer>0</integer>"
+  else
+    cal_block="    <key>Hour</key><integer>$hour</integer>
+    <key>Minute</key><integer>0</integer>"
+  fi
+
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyLists-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$label</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$script</string>
+    <string>$task</string>
+    <string>-y</string>
+  </array>
+  <key>StartCalendarInterval</key>
+  <dict>
+$cal_block
+  </dict>
+  <key>StandardOutPath</key><string>$log</string>
+  <key>StandardErrorPath</key><string>$log</string>
+  <key>RunAtLoad</key><false/>
+</dict>
+</plist>
+EOF
+
+  launchctl unload "$plist" 2>/dev/null
+  if launchctl load "$plist" 2>/dev/null; then
+    print "${C_GRN}✓ installed${C_RESET} $label"
+    print "  plist: $plist"
+    print "  log:   $log"
+  else
+    print "${C_RED}launchctl load failed${C_RESET} — plist written but not loaded"
+    return 1
+  fi
+}
+
+schedule_list_jobs() {
+  local -a plists
+  plists=("$LAUNCHAGENTS_DIR/$PLIST_PREFIX".*.plist(N))
+  if (( ${#plists} == 0 )); then
+    print "${C_DIM}(no mclmm schedules)${C_RESET}"
+    return 0
+  fi
+  local p label loaded
+  print "${C_BOLD}mclmm schedules${C_RESET}"
+  for p in "${plists[@]}"; do
+    label=${p:t:r}
+    if launchctl list 2>/dev/null | awk '{print $3}' | grep -Fxq "$label"; then
+      loaded="${C_GRN}loaded${C_RESET}"
+    else
+      loaded="${C_DIM}not loaded${C_RESET}"
+    fi
+    printf '  %-30s %s\n' "$label" "$loaded"
+    printf '    %s%s%s\n' "$C_DIM" "$p" "$C_RESET"
+  done
+}
+
+schedule_remove() {
+  local -a plists
+  plists=("$LAUNCHAGENTS_DIR/$PLIST_PREFIX".*.plist(N))
+  if (( ${#plists} == 0 )); then
+    print "${C_DIM}(no mclmm schedules to remove)${C_RESET}"
+    return 0
+  fi
+  local i p
+  print "${C_BOLD}Remove which schedule?${C_RESET}"
+  for (( i=1; i<=${#plists}; i++ )); do
+    printf '  %d) %s\n' "$i" "${plists[i]:t:r}"
+  done
+  local reply
+  print -n "${C_YEL}Choose [1-${#plists}, or 'a' for all]: ${C_RESET}"
+  read -r reply
+  local -a victims
+  if [[ $reply == a || $reply == A ]]; then
+    victims=("${plists[@]}")
+  elif [[ $reply == <-> ]] && (( reply >= 1 && reply <= ${#plists} )); then
+    victims=("${plists[reply]}")
+  else
+    print "${C_DIM}cancelled${C_RESET}"
+    return 0
+  fi
+  for p in "${victims[@]}"; do
+    launchctl unload "$p" 2>/dev/null
+    rm -f "$p"
+    print "${C_GRN}removed${C_RESET}  ${p:t:r}"
+  done
+}
+
+cmd_schedule() {
+  local sub=${1:-}
+  case $sub in
+    list) schedule_list_jobs ;;
+    remove|rm) schedule_remove ;;
+    ""|add)
+      local task freq weekday=0 hour day_name
+      task=$(schedule_pick "Task" clean cache xcode) || return 1
+      print ""
+      freq=$(schedule_pick "Frequency" weekly daily) || return 1
+      print ""
+      if [[ $freq == weekly ]]; then
+        day_name=$(schedule_pick "Day of week" Sun Mon Tue Wed Thu Fri Sat) || return 1
+        case $day_name in
+          Sun) weekday=0 ;; Mon) weekday=1 ;; Tue) weekday=2 ;;
+          Wed) weekday=3 ;; Thu) weekday=4 ;; Fri) weekday=5 ;; Sat) weekday=6 ;;
+        esac
+        print ""
+      fi
+      hour=$(schedule_pick_hour) || return 1
+      print ""
+      print "${C_BOLD}Summary${C_RESET}"
+      print "  task:      $task"
+      print "  frequency: $freq"
+      [[ $freq == weekly ]] && print "  day:       $day_name"
+      print "  hour:      $(printf '%02d:00' "$hour")"
+      if confirm "Install schedule?"; then
+        schedule_install "$task" "$freq" "$weekday" "$hour"
+      else
+        print "${C_DIM}cancelled${C_RESET}"
+      fi
+      ;;
+    *)
+      print "${C_RED}Unknown schedule action:${C_RESET} $sub"
+      print "  mclmm schedule          # interactive add"
+      print "  mclmm schedule list"
+      print "  mclmm schedule remove"
+      return 1
+      ;;
+  esac
+}
+
 cmd_app_list() {
   local dir app kb
   local -a rows
@@ -574,6 +772,8 @@ usage() {
   print "  mclmm uninstall <app>      Remove an app and all its leftovers"
   print "  mclmm config [add|remove|list] <path>"
   print "                             Manage extra cache paths (globs supported)"
+  print "  mclmm schedule [list|remove]"
+  print "                             Install a launchd job to run a cleanup periodically"
   print ""
   print "  Each subcommand is also callable prefixed: ${C_DIM}mclmm-clean, mclmm-scan, …${C_RESET}"
   print "  Flags: --dry-run  -y/--yes  --trash  --system  -h/--help"
@@ -605,6 +805,7 @@ main() {
     app-list)  cmd_app_list ;;
     uninstall) cmd_uninstall "${args[2]:-}" ;;
     config)    cmd_config "${args[2]:-}" "${args[3]:-}" ;;
+    schedule)  cmd_schedule "${args[2]:-}" ;;
     ""|help)   usage ;;
     *) print "${C_RED}Unknown command: $cmd${C_RESET}"; usage; return 1 ;;
   esac

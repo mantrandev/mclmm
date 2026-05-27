@@ -38,6 +38,36 @@ identical to `mclmm scan`, `mclmm clean --dry-run`, `mclmm uninstall Slack`.
 | `mclmm config list` | Show extra cache paths (read from `~/.config/mclmm/paths.conf`) |
 | `mclmm config add <path-or-glob>` | Add an extra path/glob to clean alongside the defaults |
 | `mclmm config remove <path-or-glob>` | Remove an extra path |
+| `mclmm schedule` | Interactive menu — install a launchd job (task, frequency, day, hour) |
+| `mclmm schedule list` | List installed mclmm launchd jobs and load status |
+| `mclmm schedule remove` | Pick and remove a previously installed schedule |
+
+## Scheduling on CI / runner hosts
+
+Set up an unattended weekly cleanup with `mclmm schedule`. The menu walks through:
+
+1. **Task** — `clean` (default), `cache`, or `xcode`
+2. **Frequency** — `weekly` (default) or `daily`
+3. **Day** (weekly only) — `Sun` (default) … `Sat`
+4. **Hour** — `0`–`23`, default `3`
+
+Output: a launchd plist at `~/Library/LaunchAgents/com.mclmm.<task>.plist` invoking `mclmm <task> -y`. Logs go to `~/Library/Logs/mclmm/<task>.log`. The job is loaded immediately.
+
+Typical CI-runner bootstrap:
+
+```bash
+mclmm config add '/Users/gitlab-runner/builds/*/*/DerivedData'
+mclmm config add '/Users/gitlab-runner/builds/*/*/.swiftpm'
+mclmm schedule              # pick: clean / weekly / Sun / 03:00
+```
+
+Inspect or undo:
+
+```bash
+mclmm schedule list
+mclmm schedule remove
+tail -f ~/Library/Logs/mclmm/clean.log
+```
 
 ## Extra cache paths
 
