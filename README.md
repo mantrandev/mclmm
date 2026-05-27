@@ -7,7 +7,7 @@ Inspired by [mac-cleaner-cli](https://github.com/guhcostan/mac-cleaner-cli), rew
 ## Install
 
 ```bash
-ln -s "$PWD/mclmm" /usr/local/bin/mclmm   # or anywhere on $PATH
+ln -sf "$PWD/mclmm" /usr/local/bin/mclmm   # or anywhere on $PATH
 ```
 
 ### Prefixed commands
@@ -17,7 +17,7 @@ The `mclmm-` prefix avoids name collisions with other packages on `$PATH`.
 
 ```bash
 for s in storage scan xcode cache clean app-list uninstall; do
-  ln -s "$PWD/mclmm" "/usr/local/bin/mclmm-$s"
+  ln -sf "$PWD/mclmm" "/usr/local/bin/mclmm-$s"
 done
 ```
 
