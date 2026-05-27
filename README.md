@@ -35,6 +35,21 @@ identical to `mclmm scan`, `mclmm clean --dry-run`, `mclmm uninstall Slack`.
 | `mclmm clean` | `cache` + `xcode` |
 | `mclmm app-list` | List all apps in `/Applications` sorted by size |
 | `mclmm uninstall <app>` | Remove an app **and** its caches, prefs, containers, group containers, login items |
+| `mclmm config list` | Show extra cache paths (read from `~/.config/mclmm/paths.conf`) |
+| `mclmm config add <path-or-glob>` | Add an extra path/glob to clean alongside the defaults |
+| `mclmm config remove <path-or-glob>` | Remove an extra path |
+
+## Extra cache paths
+
+For CI/runner hosts whose build caches live outside the macOS defaults, add them once:
+
+```bash
+mclmm config add '/Users/gitlab-runner/builds/*/*/DerivedData'
+mclmm config add '/Users/gitlab-runner/builds/*/*/.swiftpm'
+mclmm config add '/Users/gitlab-runner/builds/*/*/vendor/bundle'
+```
+
+Globs are zsh-expanded at scan/clean time. `mclmm scan`, `mclmm cache`, and `mclmm clean` automatically include them. Config lives at `~/.config/mclmm/paths.conf` (one path per line, `#` for comments).
 
 ## Flags
 

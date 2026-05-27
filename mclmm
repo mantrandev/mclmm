@@ -28,6 +28,9 @@ ASSUME_YES=0
 USE_TRASH=0
 DO_SYSTEM=0
 
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mclmm"
+CONFIG_PATHS_FILE="$CONFIG_DIR/paths.conf"
+
 PROTECTED_PATHS=(
   "$HOME/Library/Caches/org.swift.swiftpm"
 )
@@ -172,6 +175,19 @@ trim_devicesupport() {
   done
 }
 
+extra_cache_targets() {
+  [[ -f $CONFIG_PATHS_FILE ]] || return 0
+  local line expanded entry
+  while IFS= read -r line || [[ -n $line ]]; do
+    line="${line## }"; line="${line%% }"
+    [[ -z $line || $line == \#* ]] && continue
+    expanded=(${~line}(N))
+    for entry in "${expanded[@]}"; do
+      print -- "$entry"
+    done
+  done < "$CONFIG_PATHS_FILE"
+}
+
 cache_targets() {
   print -l \
     "$HOME/Library/Caches" \
@@ -183,6 +199,7 @@ cache_targets() {
     "$HOME/Library/Caches/pip" \
     "$HOME/Library/Caches/CocoaPods" \
     "$HOME/Library/Caches/Homebrew"
+  extra_cache_targets
 }
 
 cmd_scan() {
@@ -485,6 +502,51 @@ cmd_clean() {
   cmd_xcode
 }
 
+cmd_config() {
+  local action=${1:-list} path=${2:-}
+  case $action in
+    list)
+      print "${C_BOLD}Extra cache paths${C_RESET} ${C_DIM}($CONFIG_PATHS_FILE)${C_RESET}"
+      if [[ ! -f $CONFIG_PATHS_FILE ]]; then
+        print "  ${C_DIM}(none configured)${C_RESET}"
+        return 0
+      fi
+      local line i=1
+      while IFS= read -r line || [[ -n $line ]]; do
+        [[ -z $line || $line == \#* ]] && continue
+        printf '  %2d  %s\n' "$i" "$line"
+        (( i++ ))
+      done < "$CONFIG_PATHS_FILE"
+      ;;
+    add)
+      [[ -n $path ]] || { print "${C_RED}Usage: mclmm config add <path-or-glob>${C_RESET}"; return 1; }
+      mkdir -p "$CONFIG_DIR"
+      touch "$CONFIG_PATHS_FILE"
+      if grep -Fxq -- "$path" "$CONFIG_PATHS_FILE" 2>/dev/null; then
+        print "${C_DIM}already present:${C_RESET} $path"
+      else
+        print -- "$path" >> "$CONFIG_PATHS_FILE"
+        print "${C_GRN}added${C_RESET}    $path"
+      fi
+      ;;
+    remove|rm)
+      [[ -n $path ]] || { print "${C_RED}Usage: mclmm config remove <path-or-glob>${C_RESET}"; return 1; }
+      [[ -f $CONFIG_PATHS_FILE ]] || { print "${C_DIM}nothing to remove${C_RESET}"; return 0; }
+      local tmp="$CONFIG_PATHS_FILE.tmp"
+      grep -Fxv -- "$path" "$CONFIG_PATHS_FILE" > "$tmp" 2>/dev/null || true
+      mv "$tmp" "$CONFIG_PATHS_FILE"
+      print "${C_GRN}removed${C_RESET}  $path"
+      ;;
+    *)
+      print "${C_RED}Unknown config action:${C_RESET} $action"
+      print "  mclmm config list"
+      print "  mclmm config add <path-or-glob>"
+      print "  mclmm config remove <path-or-glob>"
+      return 1
+      ;;
+  esac
+}
+
 cmd_app_list() {
   local dir app kb
   local -a rows
@@ -510,6 +572,8 @@ usage() {
   print "  mclmm clean                cache + xcode"
   print "  mclmm app-list             List installed apps with size"
   print "  mclmm uninstall <app>      Remove an app and all its leftovers"
+  print "  mclmm config [add|remove|list] <path>"
+  print "                             Manage extra cache paths (globs supported)"
   print ""
   print "  Each subcommand is also callable prefixed: ${C_DIM}mclmm-clean, mclmm-scan, …${C_RESET}"
   print "  Flags: --dry-run  -y/--yes  --trash  --system  -h/--help"
@@ -540,6 +604,7 @@ main() {
     clean)     cmd_clean ;;
     app-list)  cmd_app_list ;;
     uninstall) cmd_uninstall "${args[2]:-}" ;;
+    config)    cmd_config "${args[2]:-}" "${args[3]:-}" ;;
     ""|help)   usage ;;
     *) print "${C_RED}Unknown command: $cmd${C_RESET}"; usage; return 1 ;;
   esac
