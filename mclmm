@@ -143,7 +143,7 @@ report_line() {
 
 cmd_storage() {
   print "${C_BOLD}Disk${C_RESET}"
-  df -h / | awk 'NR==1{print "  "$0} NR==2{print "  "$0}'
+  df -H / | awk 'NR==1{printf "  %-18s %6s %6s %6s %8s %s\n",$1,$2,$3,$4,$5,$9} NR==2{printf "  %-18s %6s %6s %6s %8s %s\n",$1,$2,$3,$4,$5,$9}'
   print ""
   print "${C_BOLD}Largest folders in $HOME${C_RESET} ${C_DIM}(top 12)${C_RESET}"
   du -sk "$HOME"/*(DN) 2>/dev/null | sort -rn | head -12 | while read -r kb path; do
