@@ -5,7 +5,7 @@
 # Commands:
 #   mclmm storage              Disk usage + biggest folders in home
 #   mclmm scan                 Smart scan: reclaimable space per category (read-only)
-#   mclmm xcode                Clean Xcode DerivedData, Archives, Products, sim caches; trim DeviceSupport
+#   mclmm xcode                Clean Xcode DerivedData, Archives, Products, sim caches; trim DeviceSupport; erase sim content
 #   mclmm cache                Clean user caches, logs, package-manager caches
 #   mclmm clean                Run cache + xcode cleaners
 #   mclmm app-list             List installed apps with size
@@ -166,6 +166,12 @@ devicesupport_dirs() {
     "$HOME/Library/Developer/Xcode/tvOS DeviceSupport"
 }
 
+find_project_deriveddata() {
+  find "$HOME" \
+    \( -path "$HOME/Library" -o -name node_modules -o -name .git -o -path "$HOME/.Trash" \) -prune \
+    -o -type d -name DerivedData -print 2>/dev/null
+}
+
 trim_devicesupport() {
   local base=$1 keep=2 i=1 entry
   [[ -d $base ]] || return 0
@@ -228,7 +234,11 @@ cmd_scan() {
   done
 
   print "\n${C_CYN}Xcode${C_RESET}"
-  for t in $(xcode_targets) $(devicesupport_dirs); do
+  for t in $(xcode_targets) $(devicesupport_dirs) "$HOME/Library/Developer/CoreSimulator/Devices"; do
+    kb=$(size_kb "$t"); (( kb > 0 )) || continue
+    account "$t" "$kb"
+  done
+  for t in ${(f)"$(find_project_deriveddata)"}; do
     kb=$(size_kb "$t"); (( kb > 0 )) || continue
     account "$t" "$kb"
   done
@@ -277,25 +287,35 @@ cmd_cache() {
 
 select_deriveddata() {
   local dd="$HOME/Library/Developer/Xcode/DerivedData"
-  [[ -d $dd ]] || { print "${C_DIM}DerivedData not found.${C_RESET}"; return 0; }
 
   local -a paths labels sizes
   local dir kb wspath label
-  for dir in "$dd"/*(ND/); do
+
+  if [[ -d $dd ]]; then
+    for dir in "$dd"/*(ND/); do
+      kb=$(size_kb "$dir")
+      (( kb > 0 )) || continue
+      paths+=("$dir"); sizes+=("$kb")
+      if [[ -f "$dir/info.plist" ]]; then
+        wspath=$(/usr/libexec/PlistBuddy -c "Print WorkspacePath" "$dir/info.plist" 2>/dev/null)
+      else
+        wspath=""
+      fi
+      label="${wspath:+${wspath/#$HOME/~}}"
+      [[ -z $label ]] && label="${dir:t}"
+      labels+=("$label")
+    done
+  fi
+
+  print "${C_DIM}Scanning home for custom DerivedData…${C_RESET}"
+  for dir in ${(f)"$(find_project_deriveddata)"}; do
     kb=$(size_kb "$dir")
     (( kb > 0 )) || continue
     paths+=("$dir"); sizes+=("$kb")
-    if [[ -f "$dir/info.plist" ]]; then
-      wspath=$(/usr/libexec/PlistBuddy -c "Print WorkspacePath" "$dir/info.plist" 2>/dev/null)
-    else
-      wspath=""
-    fi
-    label="${wspath:+${wspath/#$HOME/~}}"
-    [[ -z $label ]] && label="${dir:t}"
-    labels+=("$label")
+    labels+=("${dir/#$HOME/~}")
   done
 
-  (( ${#paths} == 0 )) && { print "${C_DIM}DerivedData is empty.${C_RESET}"; return 0; }
+  (( ${#paths} == 0 )) && { print "${C_DIM}No DerivedData found.${C_RESET}"; return 0; }
 
   if ! [[ -t 0 && -t 1 ]] || (( ASSUME_YES )); then
     for dir in "${paths[@]}"; do remove_path "$dir"; done
@@ -418,6 +438,21 @@ cmd_xcode() {
     else
       xcrun simctl delete unavailable 2>/dev/null \
         && print "  ${C_GRN}done${C_RESET}     removed unavailable simulators"
+    fi
+  fi
+
+  local sim_devices="$HOME/Library/Developer/CoreSimulator/Devices"
+  if [[ -d $sim_devices ]]; then
+    local sim_kb
+    sim_kb=$(size_kb "$sim_devices")
+    if [[ -t 0 && -t 1 ]] && (( sim_kb > 0 )) && confirm "Erase ALL simulator content & data ($(human $sim_kb))? Keeps devices, wipes installed apps."; then
+      if (( DRY_RUN )); then
+        print "  ${C_DIM}would run${C_RESET} xcrun simctl shutdown all && xcrun simctl erase all"
+      else
+        xcrun simctl shutdown all 2>/dev/null
+        xcrun simctl erase all 2>/dev/null \
+          && print "  ${C_GRN}done${C_RESET}     erased all simulator content"
+      fi
     fi
   fi
 }
