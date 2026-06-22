@@ -217,19 +217,80 @@ cache_targets() {
   extra_cache_targets
 }
 
-cache_group() {
-  local title=$1 desc=$2 arrname=$3
-  local -a paths
-  paths=("${(@P)arrname}")
-  local total
-  total=$(reclaimable_kb "${paths[@]}")
-  (( total > 0 )) || return 0
-  print "\n${C_BOLD}${title}${C_RESET} — $(human $total)"
-  print "  ${C_DIM}${desc}${C_RESET}"
-  if confirm "Clear ${title}?"; then
-    local p
-    for p in "${paths[@]}"; do empty_dir "$p"; done
-  fi
+# Checkbox multi-select over PK_LABELS / PK_SIZES; selection returned in PK_SEL.
+# Returns 1 if the user cancels with q.
+pick_multi() {
+  local title=$1
+  local n_items=${#PK_LABELS}
+  PK_SEL=()
+  local i cursor=1 cols=${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}
+  local label_width=$(( cols - 18 ))
+  (( label_width < 20 )) && label_width=20
+  for (( i=1; i<=n_items; i++ )); do PK_SEL[i]=0; done
+
+  local saved_stty _first=1
+  saved_stty=$(stty -g 2>/dev/null)
+  stty -echo -icanon min 1 time 0 2>/dev/null
+  printf '\e[?25l'
+
+  _render() {
+    local sn=0 stotal=0
+    for (( i=1; i<=n_items; i++ )); do
+      (( PK_SEL[i] )) && { (( sn++ )); (( stotal += PK_SIZES[i] )); }
+    done
+    if (( _first )); then
+      printf '\e[2J\e[H'
+      _first=0
+    else
+      printf '\e[%dA' $(( n_items + 4 ))
+    fi
+    printf '%s%s%s%s %s\e[K\n' "$C_BOLD" "$C_CYN" "$title" "$C_RESET" \
+      "${C_DIM}↑↓ move  SPACE toggle  a all  ENTER confirm  q quit${C_RESET}"
+    printf '\e[K\n'
+    for (( i=1; i<=n_items; i++ )); do
+      local mark="${C_DIM}[ ]${C_RESET}" arrow="  "
+      (( PK_SEL[i] )) && mark="${C_GRN}[x]${C_RESET}"
+      [[ $i == $cursor ]] && arrow="${C_CYN}▶ ${C_RESET}"
+      local lbl="${PK_LABELS[i]}"
+      (( ${#lbl} > label_width )) && lbl="…${lbl: -$(( label_width - 1 ))}"
+      printf '%s%s %-*s %s\e[K\n' "$arrow" "$mark" "$label_width" "$lbl" "$(human ${PK_SIZES[i]})"
+    done
+    printf '\e[K\n  %sSelected:%s %d item(s)' "$C_BOLD" "$C_RESET" "$sn"
+    (( stotal > 0 )) && printf ' — %s' "$(human $stotal)"
+    printf '\e[K\n'
+  }
+
+  local key esc
+  while true; do
+    _render
+    IFS= read -rsk 1 key
+    if [[ $key == $'\x1b' ]]; then
+      IFS= read -rsk 2 -t 0.05 esc 2>/dev/null || esc=""
+      case $esc in
+        '[A') (( cursor > 1 )) && (( cursor-- )) ;;
+        '[B') (( cursor < n_items )) && (( cursor++ )) ;;
+      esac
+      continue
+    fi
+    case $key in
+      k) (( cursor > 1 )) && (( cursor-- )) ;;
+      j) (( cursor < n_items )) && (( cursor++ )) ;;
+      ' ') PK_SEL[cursor]=$(( 1 - PK_SEL[cursor] )) ;;
+      a)
+        local all_on=1
+        for (( i=1; i<=n_items; i++ )); do (( PK_SEL[i] == 0 )) && { all_on=0; break; }; done
+        for (( i=1; i<=n_items; i++ )); do PK_SEL[i]=$(( 1 - all_on )); done
+        ;;
+      $'\n'|$'\r') break ;;
+      q|Q)
+        stty "$saved_stty" 2>/dev/null; printf '\e[?25h\e[2J\e[H'
+        print "${C_DIM}Cancelled.${C_RESET}"; return 1 ;;
+    esac
+  done
+
+  stty "$saved_stty" 2>/dev/null
+  printf '\e[?25h\e[2J\e[H'
+  return 0
 }
 
 cmd_scan() {
@@ -293,13 +354,6 @@ cmd_cache() {
   pkgs=("$HOME/.npm/_cacache" "$C/Yarn" "$C/bun" "$C/pip" "$C/CocoaPods" "$HOME/.cache")
   logs=("$HOME/Library/Logs" "$HOME/Library/Application Support/CrashReporter")
 
-  cache_group "Browser caches" \
-    "Cached web pages, images and scripts. Keeps history, logins and bookmarks." browsers
-  cache_group "Package-manager caches" \
-    "Downloaded package archives (npm, yarn, bun, pip, CocoaPods). Refetched on next install." pkgs
-  cache_group "App & system logs" \
-    "Diagnostic logs and crash reports." logs
-
   local d skip r handled
   handled=("${browsers[@]}" "${pkgs[@]}" "${PROTECTED_PATHS[@]}")
   for d in "$C"/*(ND/); do
@@ -308,8 +362,42 @@ cmd_cache() {
     (( skip )) || others+=("$d")
   done
   others+=($(extra_cache_targets))
-  cache_group "Other app caches" \
-    "Remaining per-app caches in ~/Library/Caches not covered above." others
+
+  local -a g_titles g_sizes g_arr
+  add_group() {
+    local title=$1 arrname=$2
+    local -a ps; ps=("${(@P)arrname}")
+    local tot; tot=$(reclaimable_kb "${ps[@]}")
+    (( tot > 0 )) || return 0
+    g_titles+=("$title"); g_sizes+=("$tot"); g_arr+=("$arrname")
+  }
+  clear_group() {
+    local -a ps; ps=("${(@P)1}")
+    local p; for p in "${ps[@]}"; do empty_dir "$p"; done
+  }
+  add_group "Browser caches — web assets; keeps history & logins" browsers
+  add_group "Package-manager caches — npm/yarn/bun/pip; refetched on install" pkgs
+  add_group "App & system logs — diagnostics & crash reports" logs
+  add_group "Other app caches — remaining ~/Library/Caches" others
+
+  if (( ${#g_titles} )); then
+    local gi
+    if ! [[ -t 0 && -t 1 ]] || (( ASSUME_YES )); then
+      for (( gi=1; gi<=${#g_titles}; gi++ )); do clear_group "$g_arr[gi]"; done
+    else
+      PK_LABELS=("${g_titles[@]}"); PK_SIZES=("${g_sizes[@]}")
+      if pick_multi "User caches"; then
+        local any=0
+        for (( gi=1; gi<=${#g_titles}; gi++ )); do
+          (( PK_SEL[gi] )) || continue
+          any=1
+          print "${C_BOLD}Clearing ${g_titles[gi]%% —*} — $(human ${g_sizes[gi]})${C_RESET}"
+          clear_group "$g_arr[gi]"
+        done
+        (( any )) || print "${C_DIM}Nothing selected.${C_RESET}"
+      fi
+    fi
+  fi
 
   if command -v brew >/dev/null 2>&1 && confirm "Run 'brew cleanup --prune=all' (old downloads & versions)?"; then
     if (( DRY_RUN )); then
@@ -375,85 +463,19 @@ select_deriveddata() {
     return 0
   fi
 
-  local -a sel
-  local i cursor=1 cols=${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}
-  local label_width=$(( cols - 18 ))
-  (( label_width < 20 )) && label_width=20
-  for (( i=1; i<=${#paths}; i++ )); do sel[i]=0; done
+  PK_LABELS=("${labels[@]}"); PK_SIZES=("${sizes[@]}")
+  pick_multi "DerivedData" || return 0
 
-  local saved_stty _dd_first=1
-  saved_stty=$(stty -g 2>/dev/null)
-  stty -echo -icanon min 1 time 0 2>/dev/null
-  printf '\e[?25l'
-
-  _render_dd() {
-    local n=0 total_kb=0
-    for (( i=1; i<=${#paths}; i++ )); do
-      (( sel[i] )) && { (( n++ )); (( total_kb += sizes[i] )); }
-    done
-    if (( _dd_first )); then
-      printf '\e[2J\e[H'
-      _dd_first=0
-    else
-      printf '\e[%dA' $(( ${#paths} + 4 ))
-    fi
-    printf '%s%sDerivedData%s %s\e[K\n' "$C_BOLD" "$C_CYN" "$C_RESET" \
-      "${C_DIM}↑↓ move  SPACE toggle  a all  ENTER confirm  q quit${C_RESET}"
-    printf '\e[K\n'
-    for (( i=1; i<=${#paths}; i++ )); do
-      local mark="${C_DIM}[ ]${C_RESET}" arrow="  "
-      (( sel[i] )) && mark="${C_GRN}[x]${C_RESET}"
-      [[ $i == $cursor ]] && arrow="${C_CYN}▶ ${C_RESET}"
-      local lbl="${labels[i]}"
-      (( ${#lbl} > label_width )) && lbl="…${lbl: -$(( label_width - 1 ))}"
-      printf '%s%s %-*s %s\e[K\n' "$arrow" "$mark" "$label_width" "$lbl" "$(human ${sizes[i]})"
-    done
-    printf '\e[K\n  %sSelected:%s %d item(s)' "$C_BOLD" "$C_RESET" "$n"
-    (( total_kb > 0 )) && printf ' — %s' "$(human $total_kb)"
-    printf '\e[K\n'
-  }
-
-  local key esc
-  while true; do
-    _render_dd
-    IFS= read -rsk 1 key
-    if [[ $key == $'\x1b' ]]; then
-      IFS= read -rsk 2 -t 0.05 esc 2>/dev/null || esc=""
-      case $esc in
-        '[A') (( cursor > 1 )) && (( cursor-- )) ;;
-        '[B') (( cursor < ${#paths} )) && (( cursor++ )) ;;
-      esac
-      continue
-    fi
-    case $key in
-      k) (( cursor > 1 )) && (( cursor-- )) ;;
-      j) (( cursor < ${#paths} )) && (( cursor++ )) ;;
-      ' ') sel[cursor]=$(( 1 - sel[cursor] )) ;;
-      a)
-        local all_on=1
-        for (( i=1; i<=${#paths}; i++ )); do (( sel[i] == 0 )) && { all_on=0; break; }; done
-        for (( i=1; i<=${#paths}; i++ )); do sel[i]=$(( 1 - all_on )); done
-        ;;
-      $'\n'|$'\r') break ;;
-      q|Q)
-        stty "$saved_stty" 2>/dev/null; printf '\e[?25h\e[2J\e[H'
-        print "${C_DIM}Cancelled.${C_RESET}"; return 0 ;;
-    esac
-  done
-
-  stty "$saved_stty" 2>/dev/null
-  printf '\e[?25h\e[2J\e[H'
-
-  local n=0 total_kb=0
+  local i n=0 total_kb=0
   for (( i=1; i<=${#paths}; i++ )); do
-    (( sel[i] )) && { (( n++ )); (( total_kb += sizes[i] )); }
+    (( PK_SEL[i] )) && { (( n++ )); (( total_kb += sizes[i] )); }
   done
 
   if (( n == 0 )); then print "${C_DIM}Nothing selected.${C_RESET}"; return 0; fi
 
   print "${C_BOLD}Removing ${n} item(s) — $(human $total_kb)${C_RESET}"
   for (( i=1; i<=${#paths}; i++ )); do
-    (( sel[i] )) && remove_path "${paths[i]}"
+    (( PK_SEL[i] )) && remove_path "${paths[i]}"
   done
 }
 
