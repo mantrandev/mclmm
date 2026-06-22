@@ -488,55 +488,54 @@ cmd_xcode() {
   print "${C_DIM}Scanning home for Swift package builds (.build)…${C_RESET}"
   local -a build_dirs
   build_dirs=(${(f)"$(find_project_build)"})
-  if (( ${#build_dirs} )); then
-    local build_total
-    build_total=$(reclaimable_kb "${build_dirs[@]}")
-    if confirm "Remove ${#build_dirs} Swift package .build dirs ($(human $build_total))? Rebuilds on next build."; then
-      local b
-      for b in "${build_dirs[@]}"; do remove_path "$b"; done
-    fi
-  fi
-
   local others=("$HOME/Library/Developer/Xcode/Archives"
                  "$HOME/Library/Developer/CoreSimulator/Caches"
                  "$HOME/Library/Developer/Xcode/Products")
-  local others_total
-  others_total=$(reclaimable_kb "${others[@]}")
-  if confirm "Clear Archives, Products and sim caches ($(human $others_total))?"; then
-    local t
-    for t in "${others[@]}"; do empty_dir "$t"; done
-  fi
-
-  local ds_dirs
-  ds_dirs=($(devicesupport_dirs))
-  if confirm "Trim DeviceSupport — keep 2 newest per platform, delete the rest?"; then
-    local d
-    for d in "${ds_dirs[@]}"; do trim_devicesupport "$d"; done
-  fi
-
-  if confirm "Delete unavailable simulators?"; then
-    if (( DRY_RUN )); then
-      print "  ${C_DIM}would run${C_RESET} xcrun simctl delete unavailable"
-    else
-      xcrun simctl delete unavailable 2>/dev/null \
-        && print "  ${C_GRN}done${C_RESET}     removed unavailable simulators"
-    fi
-  fi
-
+  local -a ds_dirs; ds_dirs=($(devicesupport_dirs))
   local sim_devices="$HOME/Library/Developer/CoreSimulator/Devices"
-  if [[ -d $sim_devices ]]; then
-    local sim_kb
-    sim_kb=$(size_kb "$sim_devices")
-    if [[ -t 0 && -t 1 ]] && (( sim_kb > 0 )) && confirm "Erase ALL simulator content & data ($(human $sim_kb))? Keeps devices, wipes installed apps."; then
-      if (( DRY_RUN )); then
-        print "  ${C_DIM}would run${C_RESET} xcrun simctl shutdown all && xcrun simctl erase all"
-      else
-        xcrun simctl shutdown all 2>/dev/null
-        xcrun simctl erase all 2>/dev/null \
-          && print "  ${C_GRN}done${C_RESET}     erased all simulator content"
-      fi
-    fi
+
+  local -a it_titles it_sizes it_kind it_ref
+  add_item() { it_titles+=("$1"); it_sizes+=("$2"); it_kind+=("$3"); it_ref+=("$4"); }
+  group_size() { local -a ps; ps=("${(@P)1}"); reclaimable_kb "${ps[@]}"; }
+  do_item() {
+    case ${it_kind[$1]} in
+      removelist)
+        local -a ps; ps=("${(@P)it_ref[$1]}")
+        local p; for p in "${ps[@]}"; do remove_path "$p"; done ;;
+      emptylist)
+        local -a ps; ps=("${(@P)it_ref[$1]}")
+        local p; for p in "${ps[@]}"; do empty_dir "$p"; done ;;
+      trimds)
+        local -a ps; ps=("${(@P)it_ref[$1]}")
+        local p; for p in "${ps[@]}"; do trim_devicesupport "$p"; done ;;
+      simdel)
+        if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} xcrun simctl delete unavailable"
+        else xcrun simctl delete unavailable 2>/dev/null && print "  ${C_GRN}done${C_RESET}     removed unavailable simulators"; fi ;;
+      simerase)
+        if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} xcrun simctl shutdown all && xcrun simctl erase all"
+        else xcrun simctl shutdown all 2>/dev/null; xcrun simctl erase all 2>/dev/null && print "  ${C_GRN}done${C_RESET}     erased all simulator content"; fi ;;
+    esac
+  }
+
+  local sz
+  if (( ${#build_dirs} )); then
+    sz=$(reclaimable_kb "${build_dirs[@]}")
+    (( sz > 0 )) && add_item "Swift package .build (${#build_dirs}) — rebuilds on next build" "$sz" removelist build_dirs
   fi
+  sz=$(group_size others); (( sz > 0 )) && add_item "Archives, Products & sim caches" "$sz" emptylist others
+  add_item "Trim DeviceSupport — keep 2 newest per platform" 0 trimds ds_dirs
+  add_item "Delete unavailable simulators" 0 simdel ""
+  local sim_kb=0; [[ -d $sim_devices ]] && sim_kb=$(size_kb "$sim_devices")
+  (( sim_kb > 0 )) && add_item "Erase ALL simulator content — keeps devices, wipes apps" "$sim_kb" simerase ""
+
+  MENU_TITLES=("${it_titles[@]}"); MENU_SIZES=("${it_sizes[@]}")
+  menu_run "Xcode cleanup" || return 0
+  local gi
+  for (( gi=1; gi<=${#it_titles}; gi++ )); do
+    (( MENU_PICK[gi] )) || continue
+    print "${C_BOLD}→ ${it_titles[gi]%% —*}${C_RESET}"
+    do_item $gi
+  done
 }
 
 cmd_uninstall() {
