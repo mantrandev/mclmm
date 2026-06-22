@@ -381,67 +381,44 @@ cmd_cache() {
   done
   others+=($(extra_cache_targets))
 
-  local -a g_titles g_sizes g_arr
-  add_group() {
-    local title=$1 arrname=$2
-    local -a ps; ps=("${(@P)arrname}")
-    local tot; tot=$(reclaimable_kb "${ps[@]}")
-    (( tot > 0 )) || return 0
-    g_titles+=("$title"); g_sizes+=("$tot"); g_arr+=("$arrname")
+  local -a it_titles it_sizes it_kind it_ref
+  add_item() { it_titles+=("$1"); it_sizes+=("$2"); it_kind+=("$3"); it_ref+=("$4"); }
+  group_size() { local -a ps; ps=("${(@P)1}"); reclaimable_kb "${ps[@]}"; }
+  do_item() {
+    case ${it_kind[$1]} in
+      group)
+        local -a ps; ps=("${(@P)it_ref[$1]}")
+        local p; for p in "${ps[@]}"; do empty_dir "$p"; done ;;
+      brew)
+        if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} brew cleanup --prune=all"
+        else brew cleanup --prune=all 2>/dev/null && print "  ${C_GRN}done${C_RESET}     brew cleanup"; fi ;;
+      trash) empty_dir "$HOME/.Trash" ;;
+      system)
+        if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} sudo rm -rf /Library/Caches/*"
+        else sudo sh -c 'rm -rf /Library/Caches/* 2>/dev/null' && print "  ${C_GRN}removed${C_RESET}  /Library/Caches/*"; fi ;;
+    esac
   }
-  clear_group() {
-    local -a ps; ps=("${(@P)1}")
-    local p; for p in "${ps[@]}"; do empty_dir "$p"; done
-  }
-  add_group "Browser caches — web assets; keeps history & logins" browsers
-  add_group "Package-manager caches — npm/yarn/bun/pip; refetched on install" pkgs
-  add_group "App & system logs — diagnostics & crash reports" logs
-  add_group "Other app caches — remaining ~/Library/Caches" others
 
-  if (( ${#g_titles} )); then
-    local gi
-    if ! [[ -t 0 && -t 1 ]] || (( ASSUME_YES )); then
-      for (( gi=1; gi<=${#g_titles}; gi++ )); do clear_group "$g_arr[gi]"; done
-    else
-      PK_LABELS=("${g_titles[@]}"); PK_SIZES=("${g_sizes[@]}")
-      if pick_multi "User caches"; then
-        local any=0
-        for (( gi=1; gi<=${#g_titles}; gi++ )); do
-          (( PK_SEL[gi] )) || continue
-          any=1
-          print "${C_BOLD}Clearing ${g_titles[gi]%% —*} — $(human ${g_sizes[gi]})${C_RESET}"
-          clear_group "$g_arr[gi]"
-        done
-        (( any )) || print "${C_DIM}Nothing selected.${C_RESET}"
-      fi
-    fi
-  fi
+  local sz
+  sz=$(group_size browsers); (( sz > 0 )) && add_item "Browser caches — web assets; keeps history & logins" "$sz" group browsers
+  sz=$(group_size pkgs);     (( sz > 0 )) && add_item "Package-manager caches — npm/yarn/bun/pip; refetched on install" "$sz" group pkgs
+  sz=$(group_size logs);     (( sz > 0 )) && add_item "App & system logs — diagnostics & crash reports" "$sz" group logs
+  sz=$(group_size others);   (( sz > 0 )) && add_item "Other app caches — remaining ~/Library/Caches" "$sz" group others
+  command -v brew >/dev/null 2>&1 && add_item "brew cleanup — old downloads & versions" 0 brew ""
+  local trash_kb; trash_kb=$(size_kb "$HOME/.Trash")
+  (( trash_kb > 0 )) && add_item "Empty Trash" "$trash_kb" trash ""
+  (( DO_SYSTEM )) && add_item "System caches — /Library/Caches (sudo)" 0 system ""
 
-  if command -v brew >/dev/null 2>&1 && confirm "Run 'brew cleanup --prune=all' (old downloads & versions)?"; then
-    if (( DRY_RUN )); then
-      brew cleanup --prune=all -n 2>/dev/null
-    else
-      brew cleanup --prune=all 2>/dev/null \
-        && print "  ${C_GRN}done${C_RESET}     brew cleanup"
-    fi
-  fi
-
-  local trash_kb
-  trash_kb=$(size_kb "$HOME/.Trash")
-  if (( trash_kb > 0 )) && confirm "Empty Trash ($(human $trash_kb))?"; then
-    empty_dir "$HOME/.Trash"
-  fi
-
-  if (( DO_SYSTEM )); then
-    if confirm "Clear /Library/Caches with sudo?"; then
-      if (( DRY_RUN )); then
-        print "  ${C_DIM}would run${C_RESET} sudo rm -rf /Library/Caches/*"
-      else
-        sudo sh -c 'rm -rf /Library/Caches/* 2>/dev/null' \
-          && print "  ${C_GRN}removed${C_RESET}  /Library/Caches/*"
-      fi
-    fi
-  fi
+  MENU_TITLES=("${it_titles[@]}"); MENU_SIZES=("${it_sizes[@]}")
+  menu_run "User caches & cleanup" || return 0
+  local gi any=0
+  for (( gi=1; gi<=${#it_titles}; gi++ )); do
+    (( MENU_PICK[gi] )) || continue
+    any=1
+    print "${C_BOLD}→ ${it_titles[gi]%% —*}${C_RESET}"
+    do_item $gi
+  done
+  (( any )) || print "${C_DIM}Nothing selected.${C_RESET}"
 }
 
 select_deriveddata() {
