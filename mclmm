@@ -253,7 +253,8 @@ pick_multi() {
       [[ $i == $cursor ]] && arrow="${C_CYN}▶ ${C_RESET}"
       local lbl="${PK_LABELS[i]}"
       (( ${#lbl} > label_width )) && lbl="…${lbl: -$(( label_width - 1 ))}"
-      printf '%s%s %-*s %s\e[K\n' "$arrow" "$mark" "$label_width" "$lbl" "$(human ${PK_SIZES[i]})"
+      local sz=""; (( PK_SIZES[i] > 0 )) && sz="$(human ${PK_SIZES[i]})"
+      printf '%s%s %-*s %s\e[K\n' "$arrow" "$mark" "$label_width" "$lbl" "$sz"
     done
     printf '\e[K\n  %sSelected:%s %d item(s)' "$C_BOLD" "$C_RESET" "$sn"
     (( stotal > 0 )) && printf ' — %s' "$(human $stotal)"
@@ -290,6 +291,23 @@ pick_multi() {
 
   stty "$saved_stty" 2>/dev/null
   printf '\e[?25h\e[2J\e[H'
+  return 0
+}
+
+# Drive a checkbox menu from MENU_TITLES / MENU_SIZES; result in MENU_PICK (1/0).
+# Non-interactive or -y selects everything. Returns 1 if there are no items or
+# the user cancels.
+menu_run() {
+  local title=$1 i
+  (( ${#MENU_TITLES} )) || return 1
+  MENU_PICK=()
+  if ! [[ -t 0 && -t 1 ]] || (( ASSUME_YES )); then
+    for (( i=1; i<=${#MENU_TITLES}; i++ )); do MENU_PICK[i]=1; done
+    return 0
+  fi
+  PK_LABELS=("${MENU_TITLES[@]}"); PK_SIZES=("${MENU_SIZES[@]}")
+  pick_multi "$title" || return 1
+  MENU_PICK=("${PK_SEL[@]}")
   return 0
 }
 
