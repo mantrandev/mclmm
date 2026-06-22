@@ -5,8 +5,8 @@
 # Commands:
 #   mclmm storage              Disk usage + biggest folders in home
 #   mclmm scan                 Smart scan: reclaimable space per category (read-only)
-#   mclmm xcode                Clean Xcode DerivedData, Archives, Products, sim caches; trim DeviceSupport; erase sim content
-#   mclmm cache                Clean user caches, logs, package-manager caches
+#   mclmm xcode                Clean Xcode DerivedData, project .build (SPM), Archives, Products, sim caches; trim DeviceSupport; erase sim content
+#   mclmm cache                Clean user caches, logs, package-manager caches; brew cleanup
 #   mclmm clean                Run cache + xcode cleaners
 #   mclmm app-list             List installed apps with size
 #   mclmm uninstall <app>      Remove an app and all its leftover files
@@ -172,6 +172,12 @@ find_project_deriveddata() {
     -o -type d -name DerivedData -print 2>/dev/null
 }
 
+find_project_build() {
+  find "$HOME" \
+    \( -path "$HOME/Library" -o -name node_modules -o -name .git -o -path "$HOME/.Trash" \) -prune \
+    -o -type d -name .build -prune -print 2>/dev/null
+}
+
 trim_devicesupport() {
   local base=$1 keep=2 i=1 entry
   [[ -d $base ]] || return 0
@@ -243,6 +249,12 @@ cmd_scan() {
     account "$t" "$kb"
   done
 
+  print "\n${C_CYN}Swift package builds${C_RESET} ${C_DIM}(.build)${C_RESET}"
+  for t in ${(f)"$(find_project_build)"}; do
+    kb=$(size_kb "$t"); (( kb > 0 )) || continue
+    account "$t" "$kb"
+  done
+
   print "\n${C_CYN}Trash${C_RESET}"
   kb=$(size_kb "$HOME/.Trash")
   account "$HOME/.Trash" "$kb"
@@ -265,6 +277,15 @@ cmd_cache() {
   if confirm "Clear user caches, logs and package-manager caches?"; then
     local t
     for t in "${targets[@]}"; do empty_dir "$t"; done
+  fi
+
+  if command -v brew >/dev/null 2>&1 && confirm "Run 'brew cleanup --prune=all' (old downloads & versions)?"; then
+    if (( DRY_RUN )); then
+      brew cleanup --prune=all -n 2>/dev/null
+    else
+      brew cleanup --prune=all 2>/dev/null \
+        && print "  ${C_GRN}done${C_RESET}     brew cleanup"
+    fi
   fi
 
   local trash_kb
@@ -414,6 +435,18 @@ cmd_xcode() {
   fi
 
   select_deriveddata
+
+  print "${C_DIM}Scanning home for Swift package builds (.build)…${C_RESET}"
+  local -a build_dirs
+  build_dirs=(${(f)"$(find_project_build)"})
+  if (( ${#build_dirs} )); then
+    local build_total
+    build_total=$(reclaimable_kb "${build_dirs[@]}")
+    if confirm "Remove ${#build_dirs} Swift package .build dirs ($(human $build_total))? Rebuilds on next build."; then
+      local b
+      for b in "${build_dirs[@]}"; do remove_path "$b"; done
+    fi
+  fi
 
   local others=("$HOME/Library/Developer/Xcode/Archives"
                  "$HOME/Library/Developer/CoreSimulator/Caches"
@@ -1002,8 +1035,8 @@ usage() {
   print ""
   print "  mclmm storage              Disk usage + biggest folders in home"
   print "  mclmm scan                 Reclaimable space per category (read-only)"
-  print "  mclmm xcode                Clean DerivedData, Archives, DeviceSupport, sims"
-  print "  mclmm cache                Clean caches, logs, pkg-manager caches, Trash"
+  print "  mclmm xcode                Clean DerivedData, .build, Archives, DeviceSupport, sims"
+  print "  mclmm cache                Clean caches, logs, pkg-manager caches, brew, Trash"
   print "  mclmm clean                cache + xcode"
   print "  mclmm app-list             List installed apps with size"
   print "  mclmm uninstall <app>      Remove an app and all its leftovers"
