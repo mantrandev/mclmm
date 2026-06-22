@@ -2,15 +2,32 @@
 
 Lightweight macOS cleaner. Single zsh script, **zero dependencies**.
 
-Inspired by [mac-cleaner-cli](https://github.com/guhcostan/mac-cleaner-cli), rewritten as one self-contained zsh file (no Node, no Homebrew formula).
+Inspired by [mac-cleaner-cli](https://github.com/guhcostan/mac-cleaner-cli), rewritten as one self-contained zsh file (no Node).
 
 ## Install
+
+### Homebrew (recommended)
+
+```bash
+brew install mantrandev/homebrew-tap/mclmm
+```
+
+Homebrew 6+ asks you to trust a third-party tap on first install — run
+`brew trust mantrandev/tap` if prompted. Update later with:
+
+```bash
+brew update && brew upgrade mclmm
+```
+
+### Manual (symlink the script)
 
 ```bash
 ln -sf "$PWD/mclmm" /usr/local/bin/mclmm   # or anywhere on $PATH
 ```
 
 ### Prefixed commands
+
+> The Homebrew install creates these automatically. Only needed for a manual install.
 
 Every subcommand is also callable as `mclmm-<subcommand>` (git-style argv[0] dispatch).
 The `mclmm-` prefix avoids name collisions with other packages on `$PATH`.
@@ -97,6 +114,18 @@ Globs are zsh-expanded at scan/clean time. `mclmm scan`, `mclmm cache`, and `mcl
 - Every destructive command shows total size and asks before deleting; combine with `--dry-run` first.
 - `--trash` makes deletions recoverable from Finder.
 - System caches require explicit `--system` + sudo; never touched otherwise.
+
+## Releasing
+
+Cut a new version and update the Homebrew tap in one step:
+
+```bash
+./release.sh 1.1.0
+```
+
+It bumps `VERSION`, commits, tags `v1.1.0`, pushes, computes the tarball
+`sha256`, and updates the formula in [`mantrandev/homebrew-tap`](https://github.com/mantrandev/homebrew-tap).
+Afterwards, any machine updates with `brew update && brew upgrade mclmm`.
 
 ## Beyond the reference project
 
