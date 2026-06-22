@@ -217,6 +217,21 @@ cache_targets() {
   extra_cache_targets
 }
 
+cache_group() {
+  local title=$1 desc=$2 arrname=$3
+  local -a paths
+  paths=("${(@P)arrname}")
+  local total
+  total=$(reclaimable_kb "${paths[@]}")
+  (( total > 0 )) || return 0
+  print "\n${C_BOLD}${title}${C_RESET} — $(human $total)"
+  print "  ${C_DIM}${desc}${C_RESET}"
+  if confirm "Clear ${title}?"; then
+    local p
+    for p in "${paths[@]}"; do empty_dir "$p"; done
+  fi
+}
+
 cmd_scan() {
   print "${C_BOLD}Smart scan${C_RESET} ${C_DIM}(read-only)${C_RESET}"
   local grand=0 kb t r nested
@@ -270,14 +285,31 @@ cmd_scan() {
 }
 
 cmd_cache() {
-  local targets total
-  targets=($(cache_targets))
-  total=$(reclaimable_kb "${targets[@]}")
-  print "${C_BOLD}User caches & logs${C_RESET} — reclaimable $(human $total)"
-  if confirm "Clear user caches, logs and package-manager caches?"; then
-    local t
-    for t in "${targets[@]}"; do empty_dir "$t"; done
-  fi
+  local C="$HOME/Library/Caches"
+
+  local -a browsers pkgs logs others
+  browsers=("$C/Google" "$C/BraveSoftware" "$C/Comet" "$C/Firefox"
+            "$C/com.apple.Safari" "$C/com.microsoft.edgemac" "$C/company.thebrowser.Browser")
+  pkgs=("$HOME/.npm/_cacache" "$C/Yarn" "$C/bun" "$C/pip" "$C/CocoaPods" "$HOME/.cache")
+  logs=("$HOME/Library/Logs" "$HOME/Library/Application Support/CrashReporter")
+
+  cache_group "Browser caches" \
+    "Cached web pages, images and scripts. Keeps history, logins and bookmarks." browsers
+  cache_group "Package-manager caches" \
+    "Downloaded package archives (npm, yarn, bun, pip, CocoaPods). Refetched on next install." pkgs
+  cache_group "App & system logs" \
+    "Diagnostic logs and crash reports." logs
+
+  local d skip r handled
+  handled=("${browsers[@]}" "${pkgs[@]}" "${PROTECTED_PATHS[@]}")
+  for d in "$C"/*(ND/); do
+    skip=0
+    for r in "${handled[@]}"; do [[ $d == $r ]] && { skip=1; break; } done
+    (( skip )) || others+=("$d")
+  done
+  others+=($(extra_cache_targets))
+  cache_group "Other app caches" \
+    "Remaining per-app caches in ~/Library/Caches not covered above." others
 
   if command -v brew >/dev/null 2>&1 && confirm "Run 'brew cleanup --prune=all' (old downloads & versions)?"; then
     if (( DRY_RUN )); then
