@@ -435,13 +435,17 @@ cmd_scan() {
 
   print "\n${C_CYN}User caches & logs${C_RESET}"
   for t in $(cache_targets); do
-    kb=$(size_kb "$t"); (( kb > 0 )) || continue
+    spin_start "Measuring ${t/#$HOME/~}…"
+    kb=$(size_kb "$t"); spin_stop
+    (( kb > 0 )) || continue
     account "$t" "$kb"
   done
 
   print "\n${C_CYN}Xcode${C_RESET}"
   for t in $(xcode_targets) $(devicesupport_dirs) "$HOME/Library/Developer/CoreSimulator/Devices"; do
-    kb=$(size_kb "$t"); (( kb > 0 )) || continue
+    spin_start "Measuring ${t/#$HOME/~}…"
+    kb=$(size_kb "$t"); spin_stop
+    (( kb > 0 )) || continue
     account "$t" "$kb"
   done
   local dd_found build_found
@@ -449,7 +453,9 @@ cmd_scan() {
   dd_found=$(cached_list "$DD_CACHE_FILE" find_project_deriveddata)
   spin_stop
   for t in ${(f)dd_found}; do
-    kb=$(size_kb "$t"); (( kb > 0 )) || continue
+    spin_start "Measuring ${t/#$HOME/~}…"
+    kb=$(size_kb "$t"); spin_stop
+    (( kb > 0 )) || continue
     account "$t" "$kb"
   done
 
@@ -458,12 +464,15 @@ cmd_scan() {
   build_found=$(cached_list "$BUILD_CACHE_FILE" find_project_build)
   spin_stop
   for t in ${(f)build_found}; do
-    kb=$(size_kb "$t"); (( kb > 0 )) || continue
+    spin_start "Measuring ${t/#$HOME/~}…"
+    kb=$(size_kb "$t"); spin_stop
+    (( kb > 0 )) || continue
     account "$t" "$kb"
   done
 
   print "\n${C_CYN}Trash${C_RESET}"
-  kb=$(size_kb "$HOME/.Trash")
+  spin_start "Measuring ~/.Trash…"
+  kb=$(size_kb "$HOME/.Trash"); spin_stop
   account "$HOME/.Trash" "$kb"
 
   if (( DO_SYSTEM )); then
