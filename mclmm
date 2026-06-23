@@ -16,6 +16,7 @@
 #   -y, --yes    Skip confirmation prompts
 #   --trash      Move to ~/.Trash instead of permanent delete
 #   --system     Also touch /Library caches (needs sudo)
+#   --no-cache   Ignore the cached scan results, recompute everything
 #   -h, --help   Show this help
 
 emulate -L zsh
@@ -27,9 +28,16 @@ DRY_RUN=0
 ASSUME_YES=0
 USE_TRASH=0
 DO_SYSTEM=0
+USE_CACHE=1
+DID_DELETE=0
 
 CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/mclmm"
 CONFIG_PATHS_FILE="$CONFIG_DIR/paths.conf"
+CACHE_DIR="$CONFIG_DIR/cache"
+SIZE_CACHE_FILE="$CACHE_DIR/sizes.tsv"
+DD_CACHE_FILE="$CACHE_DIR/deriveddata.list"
+BUILD_CACHE_FILE="$CACHE_DIR/build.list"
+CACHE_TTL=${MCLMM_CACHE_TTL:-300}
 LAUNCHAGENTS_DIR="$HOME/Library/LaunchAgents"
 MCLMM_LOG_DIR="$HOME/Library/Logs/mclmm"
 PLIST_PREFIX="com.mclmm"
@@ -72,7 +80,66 @@ spin_stop() {
   SPIN_PID=""
   printf '\r\e[K\e[?25h'
 }
-trap 'spin_stop' EXIT INT TERM
+# Cross-invocation cache (TTL = CACHE_TTL seconds). `scan`/`storage` populate
+# it; a later `clean`/`xcode`/`cache` within the window reuses the du sizes and
+# the home-walk find results instead of recomputing — that's the slow part.
+# Everything is file-based: size_kb runs inside $(…) subshells, so shell
+# variables can't carry state back — only files survive. A destructive run
+# invalidates the cache so the next scan reflects reality.
+cache_fresh() {
+  local f=$1 now mtime
+  [[ -f $f ]] || return 1
+  now=$(date +%s)
+  mtime=$(stat -f %m "$f" 2>/dev/null) || return 1
+  (( now - mtime < CACHE_TTL ))
+}
+
+# Drop a stale size cache once, in the parent, before any measuring begins, so
+# subshell appends start from a clean fresh file instead of piling onto expired
+# rows. find-list caches manage their own freshness in cached_list.
+cache_prep() {
+  (( USE_CACHE )) || return 0
+  cache_fresh "$SIZE_CACHE_FILE" || rm -f "$SIZE_CACHE_FILE" 2>/dev/null
+}
+
+size_cache_get() {
+  (( USE_CACHE )) || return 1
+  cache_fresh "$SIZE_CACHE_FILE" || return 1
+  local v
+  v=$(awk -F'\t' -v p="$1" '$2==p{print $1; exit}' "$SIZE_CACHE_FILE" 2>/dev/null)
+  [[ -n $v ]] && { print -- "$v"; return 0; }
+  return 1
+}
+
+size_cache_put() {
+  (( USE_CACHE )) || return 0
+  mkdir -p "$CACHE_DIR"
+  printf '%s\t%s\n' "$2" "$1" >> "$SIZE_CACHE_FILE"
+}
+
+cache_invalidate() {
+  rm -f "$SIZE_CACHE_FILE" "$DD_CACHE_FILE" "$BUILD_CACHE_FILE" 2>/dev/null
+}
+
+# cached_list <cache-file> <generator-fn>: emit a fresh cached path list, else
+# regenerate and cache. With --no-cache, always regenerate and skip the file.
+cached_list() {
+  local f=$1 gen=$2
+  if (( USE_CACHE )); then
+    if cache_fresh "$f"; then cat "$f"; return; fi
+    mkdir -p "$CACHE_DIR"
+    "$gen" | tee "$f"
+  else
+    "$gen"
+  fi
+}
+
+_cleanup() {
+  spin_stop
+  (( DID_DELETE )) && (( ! DRY_RUN )) && cache_invalidate
+}
+trap '_cleanup' EXIT
+trap 'spin_stop; exit 130' INT TERM
 
 human() {
   local kb=$1
@@ -88,7 +155,12 @@ human() {
 size_kb() {
   local p=$1
   [[ -e $p ]] || { print 0; return; }
-  du -sk "$p" 2>/dev/null | awk 'END{print ($1==""?0:$1)}'
+  local c
+  c=$(size_cache_get "$p") && { print -- "$c"; return; }
+  local s
+  s=$(du -sk "$p" 2>/dev/null | awk 'END{print ($1==""?0:$1)}')
+  size_cache_put "$p" "$s"
+  print -- "$s"
 }
 
 reclaimable_kb() {
@@ -123,6 +195,7 @@ remove_path() {
     print "  ${C_DIM}would remove${C_RESET} $p"
     return 0
   fi
+  DID_DELETE=1
   if (( USE_TRASH )); then
     local dest="$HOME/.Trash/$(basename "$p").$(date +%s)"
     if mv "$p" "$dest" 2>/dev/null; then
@@ -373,7 +446,7 @@ cmd_scan() {
   done
   local dd_found build_found
   spin_start "Scanning home for DerivedData…"
-  dd_found=$(find_project_deriveddata)
+  dd_found=$(cached_list "$DD_CACHE_FILE" find_project_deriveddata)
   spin_stop
   for t in ${(f)dd_found}; do
     kb=$(size_kb "$t"); (( kb > 0 )) || continue
@@ -382,7 +455,7 @@ cmd_scan() {
 
   print "\n${C_CYN}Swift package builds${C_RESET} ${C_DIM}(.build)${C_RESET}"
   spin_start "Scanning home for .build…"
-  build_found=$(find_project_build)
+  build_found=$(cached_list "$BUILD_CACHE_FILE" find_project_build)
   spin_stop
   for t in ${(f)build_found}; do
     kb=$(size_kb "$t"); (( kb > 0 )) || continue
@@ -431,11 +504,11 @@ cmd_cache() {
         local p; for p in "${ps[@]}"; do empty_dir "$p"; done ;;
       brew)
         if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} brew cleanup --prune=all"
-        else spin_start "brew cleanup…"; brew cleanup --prune=all 2>/dev/null; spin_stop; print "  ${C_GRN}done${C_RESET}     brew cleanup"; fi ;;
+        else DID_DELETE=1; spin_start "brew cleanup…"; brew cleanup --prune=all 2>/dev/null; spin_stop; print "  ${C_GRN}done${C_RESET}     brew cleanup"; fi ;;
       trash) empty_dir "$HOME/.Trash" ;;
       system)
         if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} sudo rm -rf /Library/Caches/*"
-        else sudo sh -c 'rm -rf /Library/Caches/* 2>/dev/null' && print "  ${C_GRN}removed${C_RESET}  /Library/Caches/*"; fi ;;
+        else DID_DELETE=1; sudo sh -c 'rm -rf /Library/Caches/* 2>/dev/null' && print "  ${C_GRN}removed${C_RESET}  /Library/Caches/*"; fi ;;
     esac
   }
 
@@ -486,7 +559,7 @@ select_deriveddata() {
     done
   fi
 
-  extra_dd=$(find_project_deriveddata)
+  extra_dd=$(cached_list "$DD_CACHE_FILE" find_project_deriveddata)
   for dir in ${(f)extra_dd}; do
     kb=$(size_kb "$dir")
     (( kb > 0 )) || continue
@@ -531,7 +604,7 @@ cmd_xcode() {
 
   local -a build_dirs
   spin_start "Scanning home for Swift package builds (.build)…"
-  build_dirs=(${(f)"$(find_project_build)"})
+  build_dirs=(${(f)"$(cached_list "$BUILD_CACHE_FILE" find_project_build)"})
   spin_stop
   local others=("$HOME/Library/Developer/Xcode/Archives"
                  "$HOME/Library/Developer/CoreSimulator/Caches"
@@ -555,10 +628,10 @@ cmd_xcode() {
         local p; for p in "${ps[@]}"; do trim_devicesupport "$p"; done ;;
       simdel)
         if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} xcrun simctl delete unavailable"
-        else spin_start "Deleting unavailable simulators…"; xcrun simctl delete unavailable 2>/dev/null; spin_stop; print "  ${C_GRN}done${C_RESET}     removed unavailable simulators"; fi ;;
+        else DID_DELETE=1; spin_start "Deleting unavailable simulators…"; xcrun simctl delete unavailable 2>/dev/null; spin_stop; print "  ${C_GRN}done${C_RESET}     removed unavailable simulators"; fi ;;
       simerase)
         if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} xcrun simctl shutdown all && xcrun simctl erase all"
-        else spin_start "Erasing simulator content…"; xcrun simctl shutdown all 2>/dev/null; xcrun simctl erase all 2>/dev/null; spin_stop; print "  ${C_GRN}done${C_RESET}     erased all simulator content"; fi ;;
+        else DID_DELETE=1; spin_start "Erasing simulator content…"; xcrun simctl shutdown all 2>/dev/null; xcrun simctl erase all 2>/dev/null; spin_stop; print "  ${C_GRN}done${C_RESET}     erased all simulator content"; fi ;;
     esac
   }
 
@@ -1143,7 +1216,8 @@ usage() {
   print "                             Install a launchd job to run a cleanup periodically"
   print ""
   print "  Each subcommand is also callable prefixed: ${C_DIM}mclmm-clean, mclmm-scan, …${C_RESET}"
-  print "  Flags: --dry-run  -y/--yes  --trash  --system  -h/--help"
+  print "  Flags: --dry-run  -y/--yes  --trash  --system  --no-cache  -h/--help"
+  print "  ${C_DIM}scan results (sizes + home scan) are cached ${CACHE_TTL}s; clean/xcode reuse them.${C_RESET}"
 }
 
 # ---------------------------------------------------------------------------
@@ -1156,6 +1230,7 @@ main() {
       -y|--yes)  ASSUME_YES=1 ;;
       --trash)   USE_TRASH=1 ;;
       --system)  DO_SYSTEM=1 ;;
+      --no-cache) USE_CACHE=0 ;;
       -h|--help) usage; return 0 ;;
       *) args+=("$1") ;;
     esac
@@ -1163,6 +1238,7 @@ main() {
   done
 
   local cmd=${args[1]:-}
+  cache_prep
   case $cmd in
     storage)   cmd_storage ;;
     scan)      cmd_scan ;;
