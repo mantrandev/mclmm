@@ -45,6 +45,35 @@ else
   C_RESET=""; C_DIM=""; C_BOLD=""; C_RED=""; C_GRN=""; C_YEL=""; C_CYN=""
 fi
 
+# Background spinner: animates on the tty while foreground work (du/find/etc.)
+# runs. No-op when stdout is not a terminal, so piped/scheduled output stays
+# clean. Only one spinner at a time; always pair spin_start with spin_stop.
+SPIN_PID=""
+spin_start() {
+  SPIN_PID=""
+  [[ -t 1 ]] || return 0
+  local msg=$1
+  (
+    local -a frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    local i=1
+    printf '\e[?25l'
+    while true; do
+      printf '\r%s%s%s %s\e[K' "$C_CYN" "${frames[i]}" "$C_RESET" "$msg"
+      (( i = i % ${#frames} + 1 ))
+      sleep 0.08
+    done
+  ) &
+  SPIN_PID=$!
+}
+spin_stop() {
+  [[ -n $SPIN_PID ]] || return 0
+  kill "$SPIN_PID" 2>/dev/null
+  wait "$SPIN_PID" 2>/dev/null
+  SPIN_PID=""
+  printf '\r\e[K\e[?25h'
+}
+trap 'spin_stop' EXIT INT TERM
+
 human() {
   local kb=$1
   if (( kb >= 1048576 )); then
@@ -146,7 +175,11 @@ cmd_storage() {
   df -H / | awk 'NR==1{printf "  %-18s %6s %6s %6s %8s %s\n",$1,$2,$3,$4,$5,$9} NR==2{printf "  %-18s %6s %6s %6s %8s %s\n",$1,$2,$3,$4,$5,$9}'
   print ""
   print "${C_BOLD}Largest folders in $HOME${C_RESET} ${C_DIM}(top 12)${C_RESET}"
-  du -sk "$HOME"/*(DN) 2>/dev/null | sort -rn | head -12 | while read -r kb path; do
+  local du_out
+  spin_start "Measuring home folders…"
+  du_out=$(du -sk "$HOME"/*(DN) 2>/dev/null | sort -rn | head -12)
+  spin_stop
+  print -r -- "$du_out" | while read -r kb path; do
     report_line "${path/#$HOME/~}" "$kb"
   done
 }
@@ -338,13 +371,20 @@ cmd_scan() {
     kb=$(size_kb "$t"); (( kb > 0 )) || continue
     account "$t" "$kb"
   done
-  for t in ${(f)"$(find_project_deriveddata)"}; do
+  local dd_found build_found
+  spin_start "Scanning home for DerivedData…"
+  dd_found=$(find_project_deriveddata)
+  spin_stop
+  for t in ${(f)dd_found}; do
     kb=$(size_kb "$t"); (( kb > 0 )) || continue
     account "$t" "$kb"
   done
 
   print "\n${C_CYN}Swift package builds${C_RESET} ${C_DIM}(.build)${C_RESET}"
-  for t in ${(f)"$(find_project_build)"}; do
+  spin_start "Scanning home for .build…"
+  build_found=$(find_project_build)
+  spin_stop
+  for t in ${(f)build_found}; do
     kb=$(size_kb "$t"); (( kb > 0 )) || continue
     account "$t" "$kb"
   done
@@ -391,7 +431,7 @@ cmd_cache() {
         local p; for p in "${ps[@]}"; do empty_dir "$p"; done ;;
       brew)
         if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} brew cleanup --prune=all"
-        else brew cleanup --prune=all 2>/dev/null && print "  ${C_GRN}done${C_RESET}     brew cleanup"; fi ;;
+        else spin_start "brew cleanup…"; brew cleanup --prune=all 2>/dev/null; spin_stop; print "  ${C_GRN}done${C_RESET}     brew cleanup"; fi ;;
       trash) empty_dir "$HOME/.Trash" ;;
       system)
         if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} sudo rm -rf /Library/Caches/*"
@@ -400,6 +440,7 @@ cmd_cache() {
   }
 
   local sz
+  spin_start "Measuring caches…"
   sz=$(group_size browsers); (( sz > 0 )) && add_item "Browser caches — web assets; keeps history & logins" "$sz" group browsers
   sz=$(group_size pkgs);     (( sz > 0 )) && add_item "Package-manager caches — npm/yarn/bun/pip; refetched on install" "$sz" group pkgs
   sz=$(group_size logs);     (( sz > 0 )) && add_item "App & system logs — diagnostics & crash reports" "$sz" group logs
@@ -408,6 +449,7 @@ cmd_cache() {
   local trash_kb; trash_kb=$(size_kb "$HOME/.Trash")
   (( trash_kb > 0 )) && add_item "Empty Trash" "$trash_kb" trash ""
   (( DO_SYSTEM )) && add_item "System caches — /Library/Caches (sudo)" 0 system ""
+  spin_stop
 
   MENU_TITLES=("${it_titles[@]}"); MENU_SIZES=("${it_sizes[@]}")
   menu_run "User caches & cleanup" || return 0
@@ -425,8 +467,9 @@ select_deriveddata() {
   local dd="$HOME/Library/Developer/Xcode/DerivedData"
 
   local -a paths labels sizes
-  local dir kb wspath label
+  local dir kb wspath label extra_dd
 
+  spin_start "Scanning DerivedData…"
   if [[ -d $dd ]]; then
     for dir in "$dd"/*(ND/); do
       kb=$(size_kb "$dir")
@@ -443,13 +486,14 @@ select_deriveddata() {
     done
   fi
 
-  print "${C_DIM}Scanning home for custom DerivedData…${C_RESET}"
-  for dir in ${(f)"$(find_project_deriveddata)"}; do
+  extra_dd=$(find_project_deriveddata)
+  for dir in ${(f)extra_dd}; do
     kb=$(size_kb "$dir")
     (( kb > 0 )) || continue
     paths+=("$dir"); sizes+=("$kb")
     labels+=("${dir/#$HOME/~}")
   done
+  spin_stop
 
   (( ${#paths} == 0 )) && { print "${C_DIM}No DerivedData found.${C_RESET}"; return 0; }
 
@@ -485,9 +529,10 @@ cmd_xcode() {
 
   select_deriveddata
 
-  print "${C_DIM}Scanning home for Swift package builds (.build)…${C_RESET}"
   local -a build_dirs
+  spin_start "Scanning home for Swift package builds (.build)…"
   build_dirs=(${(f)"$(find_project_build)"})
+  spin_stop
   local others=("$HOME/Library/Developer/Xcode/Archives"
                  "$HOME/Library/Developer/CoreSimulator/Caches"
                  "$HOME/Library/Developer/Xcode/Products")
@@ -510,14 +555,15 @@ cmd_xcode() {
         local p; for p in "${ps[@]}"; do trim_devicesupport "$p"; done ;;
       simdel)
         if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} xcrun simctl delete unavailable"
-        else xcrun simctl delete unavailable 2>/dev/null && print "  ${C_GRN}done${C_RESET}     removed unavailable simulators"; fi ;;
+        else spin_start "Deleting unavailable simulators…"; xcrun simctl delete unavailable 2>/dev/null; spin_stop; print "  ${C_GRN}done${C_RESET}     removed unavailable simulators"; fi ;;
       simerase)
         if (( DRY_RUN )); then print "  ${C_DIM}would run${C_RESET} xcrun simctl shutdown all && xcrun simctl erase all"
-        else xcrun simctl shutdown all 2>/dev/null; xcrun simctl erase all 2>/dev/null && print "  ${C_GRN}done${C_RESET}     erased all simulator content"; fi ;;
+        else spin_start "Erasing simulator content…"; xcrun simctl shutdown all 2>/dev/null; xcrun simctl erase all 2>/dev/null; spin_stop; print "  ${C_GRN}done${C_RESET}     erased all simulator content"; fi ;;
     esac
   }
 
   local sz
+  spin_start "Measuring Xcode caches…"
   if (( ${#build_dirs} )); then
     sz=$(reclaimable_kb "${build_dirs[@]}")
     (( sz > 0 )) && add_item "Swift package .build (${#build_dirs}) — rebuilds on next build" "$sz" removelist build_dirs
@@ -527,6 +573,7 @@ cmd_xcode() {
   add_item "Delete unavailable simulators" 0 simdel ""
   local sim_kb=0; [[ -d $sim_devices ]] && sim_kb=$(size_kb "$sim_devices")
   (( sim_kb > 0 )) && add_item "Erase ALL simulator content — keeps devices, wipes apps" "$sim_kb" simerase ""
+  spin_stop
 
   MENU_TITLES=("${it_titles[@]}"); MENU_SIZES=("${it_sizes[@]}")
   menu_run "Xcode cleanup" || return 0
@@ -1067,12 +1114,14 @@ cmd_app_list() {
   local dir app kb
   local -a rows
   print "${C_BOLD}Installed apps${C_RESET} ${C_DIM}(/Applications)${C_RESET}"
+  spin_start "Measuring apps…"
   for dir in /Applications/*.app(N); do
     app=${dir:t:r}
     kb=$(size_kb "$dir")
     (( kb > 0 )) || continue
     rows+=("$kb $app")
   done
+  spin_stop
   printf '%s\n' "${rows[@]}" | sort -rn | while read -r kb app; do
     report_line "$app" "$kb"
   done
