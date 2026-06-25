@@ -22,7 +22,7 @@
 emulate -L zsh
 setopt local_options null_glob
 
-VERSION="1.1.4"
+VERSION="1.1.5"
 
 DRY_RUN=0
 ASSUME_YES=0
@@ -1248,6 +1248,7 @@ main() {
       --system)  DO_SYSTEM=1 ;;
       --no-cache) USE_CACHE=0 ;;
       -h|--help) usage; return 0 ;;
+      -v|--version) print "mclmm v$VERSION"; return 0 ;;
       *) args+=("$1") ;;
     esac
     shift
