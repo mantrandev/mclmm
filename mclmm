@@ -196,23 +196,30 @@ remove_path() {
     return 0
   fi
   DID_DELETE=1
+  local ok=0
   if (( USE_TRASH )); then
     local dest="$HOME/.Trash/$(basename "$p").$(date +%s)"
-    if mv "$p" "$dest" 2>/dev/null; then
+    spin_start "Trashing ${p/#$HOME/~}…"
+    mv "$p" "$dest" 2>/dev/null && ok=1
+    spin_stop
+    if (( ok )); then
       print "  ${C_GRN}trashed${C_RESET}  $p"
     else
       print "  ${C_RED}failed${C_RESET}   $p"
     fi
   else
+    spin_start "Removing ${p/#$HOME/~}…"
     if rm -rf "$p" 2>/dev/null; then
-      print "  ${C_GRN}removed${C_RESET}  $p"
+      ok=1
     else
       chflags -R nouchg "$p" 2>/dev/null
-      if rm -rf "$p" 2>/dev/null; then
-        print "  ${C_GRN}removed${C_RESET}  $p"
-      else
-        print "  ${C_RED}failed${C_RESET}   $p (try with sudo / --trash)"
-      fi
+      rm -rf "$p" 2>/dev/null && ok=1
+    fi
+    spin_stop
+    if (( ok )); then
+      print "  ${C_GRN}removed${C_RESET}  $p"
+    else
+      print "  ${C_RED}failed${C_RESET}   $p (try with sudo / --trash)"
     fi
   fi
 }
