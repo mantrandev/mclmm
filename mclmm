@@ -23,7 +23,7 @@
 emulate -L zsh
 setopt local_options null_glob
 
-VERSION="1.1.5"
+VERSION="1.2.0"
 
 DRY_RUN=0
 ASSUME_YES=0
