@@ -7,6 +7,7 @@
 #   mclmm scan                 Smart scan: reclaimable space per category (read-only)
 #   mclmm xcode                Clean Xcode DerivedData, project .build (SPM), Archives, Products, sim caches; trim DeviceSupport; erase sim content
 #   mclmm cache                Clean user caches, logs, package-manager caches; brew cleanup
+#   mclmm js                   Pick node_modules per project; clean JS build output & toolchain caches
 #   mclmm clean                Run cache + xcode cleaners
 #   mclmm app-list             List installed apps with size
 #   mclmm uninstall <app>      Remove an app and all its leftover files
@@ -37,7 +38,10 @@ CACHE_DIR="$CONFIG_DIR/cache"
 SIZE_CACHE_FILE="$CACHE_DIR/sizes.tsv"
 DD_CACHE_FILE="$CACHE_DIR/deriveddata.list"
 BUILD_CACHE_FILE="$CACHE_DIR/build.list"
+NM_CACHE_FILE="$CACHE_DIR/node_modules.list"
+JSBUILD_CACHE_FILE="$CACHE_DIR/jsbuild.list"
 CACHE_TTL=${MCLMM_CACHE_TTL:-300}
+JS_ACTIVE_DAYS=${MCLMM_JS_ACTIVE_DAYS:-30}
 LAUNCHAGENTS_DIR="$HOME/Library/LaunchAgents"
 MCLMM_LOG_DIR="$HOME/Library/Logs/mclmm"
 PLIST_PREFIX="com.mclmm"
@@ -118,7 +122,8 @@ size_cache_put() {
 }
 
 cache_invalidate() {
-  rm -f "$SIZE_CACHE_FILE" "$DD_CACHE_FILE" "$BUILD_CACHE_FILE" 2>/dev/null
+  rm -f "$SIZE_CACHE_FILE" "$DD_CACHE_FILE" "$BUILD_CACHE_FILE" \
+        "$NM_CACHE_FILE" "$JSBUILD_CACHE_FILE" 2>/dev/null
 }
 
 # cached_list <cache-file> <generator-fn>: emit a fresh cached path list, else
@@ -161,6 +166,27 @@ size_kb() {
   s=$(du -sk "$p" 2>/dev/null | awk 'END{print ($1==""?0:$1)}')
   size_cache_put "$p" "$s"
   print -- "$s"
+}
+
+unique_kb() {
+  local p=$1
+  [[ -d $p ]] || { print 0; return; }
+  local c
+  c=$(size_cache_get "u:$p") && { print -- "$c"; return; }
+  local s
+  s=$(find "$p" -type f -links 1 -print0 2>/dev/null \
+      | xargs -0 /usr/bin/stat -f '%b' 2>/dev/null \
+      | awk '{t+=$1} END{printf "%d", t/2}')
+  [[ -n $s ]] || s=0
+  size_cache_put "u:$p" "$s"
+  print -- "$s"
+}
+
+path_mtime() {
+  [[ -e $1 ]] || { print 0; return; }
+  local m
+  m=$(command stat -f %m "$1" 2>/dev/null)
+  print -- "${m:-0}"
 }
 
 reclaimable_kb() {
@@ -291,6 +317,54 @@ find_project_build() {
     -o -type d -name .build -prune -print 2>/dev/null
 }
 
+js_roots() {
+  local d
+  local -a roots
+  for d in "$HOME/Desktop" "$HOME/Documents" "$HOME/Developer" \
+           "$HOME/Projects" "$HOME/projects" "$HOME/Sites" \
+           "$HOME/code" "$HOME/src" "$HOME/work"; do
+    [[ -d $d ]] && roots+=("$d")
+  done
+  (( ${#roots} )) || return 0
+  print -l "${roots[@]}"
+}
+
+find_project_node_modules() {
+  local -a roots; roots=(${(f)"$(js_roots)"})
+  (( ${#roots} )) || return 0
+  find "${roots[@]}" -maxdepth 7 \
+    \( -name .git -o -name .Trash -o -name Library -o -name Pods \
+       -o -name .vscode -o -name .cursor -o -name .antigravity \
+       -o -name .nvm -o -name .npm -o -name .bun -o -name .yarn \
+       -o -name .pnpm -o -name .cache -o -name Carthage \) -prune \
+    -o -type d -name node_modules -prune -print 2>/dev/null
+}
+
+find_js_build_output() {
+  local -a roots; roots=(${(f)"$(js_roots)"})
+  (( ${#roots} )) || return 0
+  find "${roots[@]}" -maxdepth 7 \
+    \( -name node_modules -o -name .git -o -name .Trash -o -name Pods \
+       -o -name Library -o -name .vscode -o -name .cursor \
+       -o -name .antigravity -o -name Carthage \) -prune \
+    -o -type d \( -name .next -o -name .nuxt -o -name .svelte-kit \
+       -o -name .turbo -o -name .parcel-cache -o -name .vite \
+       -o -name .expo -o -name .metro -o -name .rollup.cache \) -prune -print 2>/dev/null
+}
+
+js_cache_targets() {
+  print -l \
+    "$HOME/.npm/_cacache" \
+    "$HOME/.npm/_npx" \
+    "$HOME/.bun/install/cache" \
+    "$HOME/Library/pnpm/store" \
+    "$HOME/Library/Caches/pnpm" \
+    "$HOME/.yarn/berry/cache" \
+    "$HOME/.cache/yarn" \
+    "$HOME/.expo" \
+    "$HOME/Library/Caches/Yarn"
+}
+
 trim_devicesupport() {
   local base=$1 keep=2 i=1 entry
   [[ -d $base ]] || return 0
@@ -317,17 +391,21 @@ extra_cache_targets() {
 }
 
 cache_targets() {
-  print -l \
-    "$HOME/Library/Caches" \
-    "$HOME/Library/Logs" \
-    "$HOME/Library/Application Support/CrashReporter" \
-    "$HOME/.npm/_cacache" \
-    "$HOME/.cache" \
-    "$HOME/Library/Caches/Yarn" \
-    "$HOME/Library/Caches/pip" \
-    "$HOME/Library/Caches/CocoaPods" \
+  local -a all
+  all=(
+    "$HOME/Library/Caches"
+    "$HOME/Library/Logs"
+    "$HOME/Library/Application Support/CrashReporter"
+    "$HOME/.npm/_cacache"
+    "$HOME/.cache"
+    "$HOME/Library/Caches/Yarn"
+    "$HOME/Library/Caches/pip"
+    "$HOME/Library/Caches/CocoaPods"
     "$HOME/Library/Caches/Homebrew"
-  extra_cache_targets
+  )
+  all+=(${(f)"$(js_cache_targets)"})
+  all+=(${(f)"$(extra_cache_targets)"})
+  print -l ${(u)all}
 }
 
 # Checkbox multi-select over PK_LABELS / PK_SIZES; selection returned in PK_SEL.
@@ -477,6 +555,29 @@ cmd_scan() {
     account "$t" "$kb"
   done
 
+  print "\n${C_CYN}JavaScript / React Native${C_RESET} ${C_DIM}(node_modules sized by unshared files only)${C_RESET}"
+  local nm_found jsb_found proj
+  spin_start "Scanning projects for node_modules…"
+  nm_found=$(cached_list "$NM_CACHE_FILE" find_project_node_modules)
+  spin_stop
+  for t in ${(f)nm_found}; do
+    proj="${t:h}"
+    [[ -f "$proj/package.json" ]] || continue
+    spin_start "Measuring ${t/#$HOME/~}…"
+    kb=$(unique_kb "$t"); spin_stop
+    (( kb > 0 )) || continue
+    account "$t" "$kb"
+  done
+  spin_start "Scanning projects for JS build output…"
+  jsb_found=$(cached_list "$JSBUILD_CACHE_FILE" find_js_build_output)
+  spin_stop
+  for t in ${(f)jsb_found}; do
+    spin_start "Measuring ${t/#$HOME/~}…"
+    kb=$(size_kb "$t"); spin_stop
+    (( kb > 0 )) || continue
+    account "$t" "$kb"
+  done
+
   print "\n${C_CYN}Trash${C_RESET}"
   spin_start "Measuring ~/.Trash…"
   kb=$(size_kb "$HOME/.Trash"); spin_stop
@@ -498,7 +599,9 @@ cmd_cache() {
   local -a browsers pkgs logs others
   browsers=("$C/Google" "$C/BraveSoftware" "$C/Comet" "$C/Firefox"
             "$C/com.apple.Safari" "$C/com.microsoft.edgemac" "$C/company.thebrowser.Browser")
-  pkgs=("$HOME/.npm/_cacache" "$C/Yarn" "$C/bun" "$C/pip" "$C/CocoaPods" "$HOME/.cache")
+  pkgs=("$HOME/.npm/_cacache" "$C/Yarn" "$C/bun" "$C/pip" "$C/CocoaPods" "$HOME/.cache"
+        "$HOME/.npm/_npx" "$C/pnpm" "$HOME/.bun/install/cache"
+        "$HOME/Library/pnpm/store" "$HOME/.yarn/berry/cache" "$HOME/.expo")
   logs=("$HOME/Library/Logs" "$HOME/Library/Application Support/CrashReporter")
 
   local d skip r handled
@@ -531,7 +634,7 @@ cmd_cache() {
   local sz
   spin_start "Measuring caches…"
   sz=$(group_size browsers); (( sz > 0 )) && add_item "Browser caches — web assets; keeps history & logins" "$sz" group browsers
-  sz=$(group_size pkgs);     (( sz > 0 )) && add_item "Package-manager caches — npm/yarn/bun/pip; refetched on install" "$sz" group pkgs
+  sz=$(group_size pkgs);     (( sz > 0 )) && add_item "Package-manager caches — npm/npx/pnpm/yarn/bun/pip/expo; refetched on install" "$sz" group pkgs
   sz=$(group_size logs);     (( sz > 0 )) && add_item "App & system logs — diagnostics & crash reports" "$sz" group logs
   sz=$(group_size others);   (( sz > 0 )) && add_item "Other app caches — remaining ~/Library/Caches" "$sz" group others
   command -v brew >/dev/null 2>&1 && add_item "brew cleanup — old downloads & versions" 0 brew ""
@@ -605,6 +708,112 @@ select_deriveddata() {
   for (( i=1; i<=${#paths}; i++ )); do
     (( PK_SEL[i] )) && remove_path "${paths[i]}"
   done
+}
+
+select_node_modules() {
+  local -a paths labels sizes
+  local dir proj kb now m g days tag found
+
+  spin_start "Scanning projects for node_modules…"
+  found=$(cached_list "$NM_CACHE_FILE" find_project_node_modules)
+  spin_stop
+
+  now=$(date +%s)
+  for dir in ${(f)found}; do
+    proj="${dir:h}"
+    [[ -f "$proj/package.json" ]] || continue
+    spin_start "Measuring ${dir/#$HOME/~}…"
+    kb=$(unique_kb "$dir"); spin_stop
+    (( kb > 0 )) || continue
+    m=$(path_mtime "$proj/package.json")
+    g=$(path_mtime "$proj/.git")
+    (( g > m )) && m=$g
+    days=$(( (now - m) / 86400 ))
+    if (( days < JS_ACTIVE_DAYS )); then
+      tag="ACTIVE ${days}d"
+    else
+      tag="idle ${days}d"
+    fi
+    paths+=("$dir"); sizes+=("$kb")
+    labels+=("${proj/#$HOME/~}  [$tag]")
+  done
+
+  (( ${#paths} == 0 )) && { print "${C_DIM}No project node_modules found.${C_RESET}"; return 0; }
+
+  if ! [[ -t 0 && -t 1 ]] || (( ASSUME_YES )); then
+    print "${C_YEL}node_modules needs interactive per-directory selection — skipped.${C_RESET}"
+    print "${C_DIM}Run 'mclmm js' in a terminal without -y to pick which projects to clear.${C_RESET}"
+    return 0
+  fi
+
+  PK_LABELS=("${labels[@]}"); PK_SIZES=("${sizes[@]}")
+  pick_multi "node_modules — nothing selected by default" || return 0
+
+  local i n=0 total_kb=0
+  for (( i=1; i<=${#paths}; i++ )); do
+    (( PK_SEL[i] )) && { (( n++ )); (( total_kb += sizes[i] )); }
+  done
+  (( n == 0 )) && { print "${C_DIM}Nothing selected.${C_RESET}"; return 0; }
+
+  print "${C_BOLD}Removing ${n} node_modules — $(human $total_kb)${C_RESET}"
+  for (( i=1; i<=${#paths}; i++ )); do
+    (( PK_SEL[i] )) && remove_path "${paths[i]}"
+  done
+}
+
+cmd_js() {
+  print "${C_BOLD}JavaScript / React Native cleanup${C_RESET}"
+  select_node_modules
+  print ""
+
+  local -a jsbuild jscaches
+  local found t
+  spin_start "Scanning projects for JS build output…"
+  found=$(cached_list "$JSBUILD_CACHE_FILE" find_js_build_output)
+  spin_stop
+  jsbuild=(${(f)found})
+  for t in ${(f)"$(js_cache_targets)"}; do
+    [[ -e $t ]] && jscaches+=("$t")
+  done
+
+  local -a it_titles it_sizes it_kind it_ref
+  add_item() { it_titles+=("$1"); it_sizes+=("$2"); it_kind+=("$3"); it_ref+=("$4"); }
+  group_size() { local -a ps; ps=("${(@P)1}"); reclaimable_kb "${ps[@]}"; }
+  do_item() {
+    case ${it_kind[$1]} in
+      removelist)
+        local -a ps; ps=("${(@P)it_ref[$1]}")
+        local p; for p in "${ps[@]}"; do remove_path "$p"; done ;;
+      emptylist)
+        local -a ps; ps=("${(@P)it_ref[$1]}")
+        local p; for p in "${ps[@]}"; do empty_dir "$p"; done ;;
+    esac
+  }
+
+  local sz
+  spin_start "Measuring JS artifacts…"
+  if (( ${#jsbuild} )); then
+    sz=$(group_size jsbuild)
+    (( sz > 0 )) && add_item "JS build output (${#jsbuild}) — .next/.expo/.turbo/.vite; rebuilds" "$sz" removelist jsbuild
+  fi
+  if (( ${#jscaches} )); then
+    sz=$(group_size jscaches)
+    (( sz > 0 )) && add_item "JS toolchain caches — npx/pnpm/bun/yarn/expo; refetched" "$sz" emptylist jscaches
+  fi
+  spin_stop
+
+  (( ${#it_titles} )) || { print "${C_DIM}No JS build output or toolchain caches found.${C_RESET}"; return 0; }
+
+  MENU_TITLES=("${it_titles[@]}"); MENU_SIZES=("${it_sizes[@]}")
+  menu_run "JS build output & caches" || return 0
+  local gi any=0
+  for (( gi=1; gi<=${#it_titles}; gi++ )); do
+    (( MENU_PICK[gi] )) || continue
+    any=1
+    print "${C_BOLD}→ ${it_titles[gi]%% —*}${C_RESET}"
+    do_item $gi
+  done
+  (( any )) || print "${C_DIM}Nothing selected.${C_RESET}"
 }
 
 cmd_xcode() {
@@ -1223,6 +1432,7 @@ usage() {
   print "  mclmm scan                 Reclaimable space per category (read-only)"
   print "  mclmm xcode                Clean DerivedData, .build, Archives, DeviceSupport, sims"
   print "  mclmm cache                Clean caches, logs, pkg-manager caches, brew, Trash"
+  print "  mclmm js                   Pick node_modules per project; JS build output & caches"
   print "  mclmm clean                cache + xcode"
   print "  mclmm app-list             List installed apps with size"
   print "  mclmm uninstall <app>      Remove an app and all its leftovers"
@@ -1234,6 +1444,8 @@ usage() {
   print "  Each subcommand is also callable prefixed: ${C_DIM}mclmm-clean, mclmm-scan, …${C_RESET}"
   print "  Flags: --dry-run  -y/--yes  --trash  --system  --no-cache  -h/--help"
   print "  ${C_DIM}scan results (sizes + home scan) are cached ${CACHE_TTL}s; clean/xcode reuse them.${C_RESET}"
+  print "  ${C_DIM}node_modules is never bulk-deleted: 'js' requires interactive per-directory picking,${C_RESET}"
+  print "  ${C_DIM}is excluded from 'clean', and marks projects touched within ${JS_ACTIVE_DAYS}d as ACTIVE.${C_RESET}"
 }
 
 # ---------------------------------------------------------------------------
@@ -1261,6 +1473,7 @@ main() {
     scan)      cmd_scan ;;
     xcode)     cmd_xcode ;;
     cache)     cmd_cache ;;
+    js)        cmd_js ;;
     clean)     cmd_clean ;;
     app-list)  cmd_app_list ;;
     uninstall) cmd_uninstall "${args[2]:-}" ;;
