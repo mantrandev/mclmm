@@ -422,7 +422,7 @@ pick_multi() {
   local saved_stty
   saved_stty=$(stty -g 2>/dev/null)
   stty -echo -icanon min 1 time 0 2>/dev/null
-  printf '\e[?25l\e[2J'
+  printf '\e[?1049h\e[?25l\e[2J\e[H'
 
   _dims() {
     local s=$(stty size 2>/dev/null)
@@ -513,13 +513,13 @@ pick_multi() {
         ;;
       $'\n'|$'\r') break ;;
       q|Q)
-        stty "$saved_stty" 2>/dev/null; printf '\e[?25h\e[H\e[J'
+        stty "$saved_stty" 2>/dev/null; printf '\e[?25h\e[?1049l'
         print "${C_DIM}Cancelled.${C_RESET}"; return 1 ;;
     esac
   done
 
   stty "$saved_stty" 2>/dev/null
-  printf '\e[?25h\e[H\e[J'
+  printf '\e[?25h\e[?1049l'
   return 0
 }
 
