@@ -33,7 +33,7 @@ Every subcommand is also callable as `mclmm-<subcommand>` (git-style argv[0] dis
 The `mclmm-` prefix avoids name collisions with other packages on `$PATH`.
 
 ```bash
-for s in storage scan xcode cache clean app-list uninstall; do
+for s in storage scan xcode cache js android clean app-list uninstall; do
   ln -sf "$PWD/mclmm" "/usr/local/bin/mclmm-$s"
 done
 ```
@@ -50,6 +50,7 @@ identical to `mclmm scan`, `mclmm clean --dry-run`, `mclmm uninstall Slack`.
 | `mclmm xcode` | Clear DerivedData, Archives, iOS/watchOS DeviceSupport, sim caches, unavailable simulators |
 | `mclmm cache` | Clear user caches, logs, package-manager caches (npm/npx/pnpm/bun/yarn/pip/expo), then Trash |
 | `mclmm js` | Pick project `node_modules` one directory at a time; clear JS build output (`.next`, `.expo`, `.turbo`, `.vite`) and JS toolchain caches |
+| `mclmm android` | Pick Unity projects to clear `Library`/`Temp`/`Logs`/`Build(s)` one at a time; clear Gradle `build`/`.gradle`/`.cxx`, stray `.apk`/`.aab`, Gradle & Unity caches, AVDs |
 | `mclmm clean` | `cache` + `xcode` — never touches `node_modules` |
 | `mclmm app-list` | List all apps in `/Applications` sorted by size |
 | `mclmm uninstall <app>` | Remove an app **and** its caches, prefs, containers, group containers, login items |

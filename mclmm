@@ -854,6 +854,175 @@ cmd_js() {
   (( any )) || print "${C_DIM}Nothing selected.${C_RESET}"
 }
 
+UNITY_GENERATED_DIRS=(Library Temp Obj obj Logs Build Builds)
+
+find_unity_projects() {
+  local -a roots; roots=(${(f)"$(js_roots)"})
+  (( ${#roots} )) || return 0
+  find "${roots[@]}" -maxdepth 7 \
+    \( -name .git -o -name .Trash -o -name Library -o -name node_modules \
+       -o -name Pods -o -name Temp -o -name Builds -o -name Build \) -prune \
+    -o -type f -path '*/ProjectSettings/ProjectVersion.txt' -print 2>/dev/null \
+    | sed 's#/ProjectSettings/ProjectVersion.txt$##'
+}
+
+find_gradle_build_output() {
+  local -a roots; roots=(${(f)"$(js_roots)"})
+  (( ${#roots} )) || return 0
+  local proj
+  find "${roots[@]}" -maxdepth 7 \
+    \( -name .git -o -name .Trash -o -name Library -o -name node_modules \
+       -o -name Pods -o -name build -o -name .gradle \) -prune \
+    -o -type f \( -name settings.gradle -o -name settings.gradle.kts \) -print 2>/dev/null \
+    | while IFS= read -r proj; do
+        find "${proj:h}" -maxdepth 3 \( -name node_modules -o -name .git \) -prune \
+          -o -type d \( -name build -o -name .gradle -o -name .cxx \) -prune -print 2>/dev/null
+      done
+}
+
+find_android_packages() {
+  local -a roots; roots=(${(f)"$(js_roots)"})
+  (( ${#roots} )) || return 0
+  find "${roots[@]}" -maxdepth 7 \
+    \( -name .git -o -name .Trash -o -name Library -o -name node_modules -o -name Pods \) -prune \
+    -o -type f \( -iname '*.apk' -o -iname '*.aab' -o -iname '*.apks' -o -iname '*.xapk' \) -print 2>/dev/null
+}
+
+android_cache_targets() {
+  print -l \
+    "$HOME/.gradle/caches" \
+    "$HOME/.gradle/daemon" \
+    "$HOME/.android/cache" \
+    "$HOME/Library/Unity/cache" \
+    "$HOME/Library/Caches/com.unity3d.UnityEditor"
+}
+
+unity_generated() {
+  local d
+  for d in "${UNITY_GENERATED_DIRS[@]}"; do
+    [[ -e "$1/$d" ]] && print -- "$1/$d"
+  done
+}
+
+select_unity_projects() {
+  local -a projects labels sizes
+  local proj kb now m g days found
+
+  if pgrep -x Unity >/dev/null 2>&1; then
+    print "${C_YEL}Unity is running — close it to clean Unity projects. Skipped.${C_RESET}"
+    return 0
+  fi
+
+  spin_start "Scanning for Unity projects…"
+  found=$(find_unity_projects)
+  spin_stop
+
+  now=$(date +%s)
+  for proj in ${(f)found}; do
+    spin_start "Measuring ${proj/#$HOME/~}…"
+    kb=$(reclaimable_kb ${(f)"$(unity_generated "$proj")"}); spin_stop
+    (( kb > 0 )) || continue
+    m=$(path_mtime "$proj/Assets")
+    g=$(path_mtime "$proj/.git")
+    (( g > m )) && m=$g
+    days=$(( (now - m) / 86400 ))
+    projects+=("$proj"); sizes+=("$kb")
+    labels+=("${proj/#$HOME/~}  [${days}d]")
+  done
+
+  (( ${#projects} == 0 )) && { print "${C_DIM}No Unity build output found.${C_RESET}"; return 0; }
+
+  if ! [[ -t 0 && -t 1 ]] || (( ASSUME_YES )); then
+    print "${C_YEL}Unity projects need interactive per-project selection — skipped.${C_RESET}"
+    print "${C_DIM}Run 'mclmm android' in a terminal without -y to pick which projects to clear.${C_RESET}"
+    return 0
+  fi
+
+  PK_LABELS=("${labels[@]}"); PK_SIZES=("${sizes[@]}")
+  pick_multi "Unity Library/Temp/Logs/Build(s) — reimports on next open" || return 0
+
+  local i n=0 total_kb=0 p
+  for (( i=1; i<=${#projects}; i++ )); do
+    (( PK_SEL[i] )) && { (( n++ )); (( total_kb += sizes[i] )); }
+  done
+  (( n == 0 )) && { print "${C_DIM}Nothing selected.${C_RESET}"; return 0; }
+
+  print "${C_BOLD}Clearing ${n} Unity project(s) — $(human $total_kb)${C_RESET}"
+  for (( i=1; i<=${#projects}; i++ )); do
+    (( PK_SEL[i] )) || continue
+    for p in ${(f)"$(unity_generated "${projects[i]}")"}; do remove_path "$p"; done
+  done
+}
+
+cmd_android() {
+  print "${C_BOLD}Android & Unity cleanup${C_RESET}"
+  select_unity_projects
+  print ""
+
+  local -a unity_roots gradle_out packages caches avds
+  local t r skip
+  spin_start "Scanning for Android build output…"
+  unity_roots=(${(f)"$(find_unity_projects)"})
+  gradle_out=(${(f)"$(find_gradle_build_output)"})
+  for t in ${(f)"$(find_android_packages)"}; do
+    skip=0
+    for r in "${unity_roots[@]}" "${gradle_out[@]}"; do [[ "$t" == "$r/"* ]] && { skip=1; break; }; done
+    (( skip )) || packages+=("$t")
+  done
+  spin_stop
+  for t in ${(f)"$(android_cache_targets)"}; do
+    [[ -e $t ]] && caches+=("$t")
+  done
+  avds=("$HOME/.android/avd"/*(N))
+
+  local -a it_titles it_sizes it_kind it_ref
+  add_item() { it_titles+=("$1"); it_sizes+=("$2"); it_kind+=("$3"); it_ref+=("$4"); }
+  group_size() { local -a ps; ps=("${(@P)1}"); reclaimable_kb "${ps[@]}"; }
+  do_item() {
+    case ${it_kind[$1]} in
+      removelist)
+        local -a ps; ps=("${(@P)it_ref[$1]}")
+        local p; for p in "${ps[@]}"; do remove_path "$p"; done ;;
+      emptylist)
+        local -a ps; ps=("${(@P)it_ref[$1]}")
+        local p; for p in "${ps[@]}"; do empty_dir "$p"; done ;;
+    esac
+  }
+
+  local sz
+  spin_start "Measuring Android artifacts…"
+  if (( ${#gradle_out} )); then
+    sz=$(group_size gradle_out)
+    (( sz > 0 )) && add_item "Gradle build output (${#gradle_out}) — build/.gradle/.cxx; rebuilds" "$sz" removelist gradle_out
+  fi
+  if (( ${#packages} )); then
+    sz=$(group_size packages)
+    (( sz > 0 )) && add_item "Android packages (${#packages}) — .apk/.aab files outside Unity projects" "$sz" removelist packages
+  fi
+  if (( ${#caches} )); then
+    sz=$(group_size caches)
+    (( sz > 0 )) && add_item "Gradle & Unity caches — refetched on next build" "$sz" emptylist caches
+  fi
+  if (( ${#avds} )); then
+    sz=$(group_size avds)
+    (( sz > 0 )) && add_item "Android emulators (AVD) — deletes every emulator image" "$sz" removelist avds
+  fi
+  spin_stop
+
+  (( ${#it_titles} )) || { print "${C_DIM}No Android build output or caches found.${C_RESET}"; return 0; }
+
+  MENU_TITLES=("${it_titles[@]}"); MENU_SIZES=("${it_sizes[@]}")
+  menu_run "Android build output & caches" || return 0
+  local gi any=0
+  for (( gi=1; gi<=${#it_titles}; gi++ )); do
+    (( MENU_PICK[gi] )) || continue
+    any=1
+    print "${C_BOLD}→ ${it_titles[gi]%% —*}${C_RESET}"
+    do_item $gi
+  done
+  (( any )) || print "${C_DIM}Nothing selected.${C_RESET}"
+}
+
 cmd_xcode() {
   command -v xcrun >/dev/null 2>&1 || { print "${C_RED}Xcode tools not found.${C_RESET}"; return 1; }
 
@@ -1471,7 +1640,8 @@ usage() {
   print "  mclmm xcode                Clean DerivedData, .build, Archives, DeviceSupport, sims"
   print "  mclmm cache                Clean caches, logs, pkg-manager caches, brew, Trash"
   print "  mclmm js                   Pick node_modules per project; JS build output & caches"
-  print "  mclmm clean                cache + xcode"
+  print "  mclmm android              Pick Unity projects; Gradle output, .apk/.aab, caches, AVDs"
+  print "  mclmm clean               cache + xcode"
   print "  mclmm app-list             List installed apps with size"
   print "  mclmm uninstall <app>      Remove an app and all its leftovers"
   print "  mclmm config [add|remove|list] <path>"
@@ -1512,7 +1682,8 @@ main() {
     xcode)     cmd_xcode ;;
     cache)     cmd_cache ;;
     js)        cmd_js ;;
-    clean)     cmd_clean ;;
+    android)   cmd_android ;;
+    clean)    cmd_clean ;;
     app-list)  cmd_app_list ;;
     uninstall) cmd_uninstall "${args[2]:-}" ;;
     config)    cmd_config "${args[2]:-}" "${args[3]:-}" ;;
